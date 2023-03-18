@@ -13,7 +13,7 @@
             "name": "Debug (OpenOCD)",
             "servertype": "openocd",
             "cwd": "${workspaceRoot}",
-            "preLaunchTask": "Cargo Build (debug)",
+            // "preLaunchTask": "Cargo Build (debug)",
             "executable": "target/thumbv7em-none-eabi/debug/stamrust",
             "device": "STM32L412KBU6",
             "configFiles": ["openocd.cfg"],
@@ -25,7 +25,7 @@
                     {
                         "label": "port0",
                         "port": 0,
-                        "type": "console"
+                        "type": "console",
                     }
                 ]
             },

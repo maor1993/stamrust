@@ -6,24 +6,28 @@ name = "stamrust"
 version = "0.1.0"
 
 [dependencies]
+#baseline core toolset for baremetal on cortex-m
 cortex-m = { version = "^0.7.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.3"
-panic-rtt-target = { version = "0.1.2", features = ["cortex-m"] }
-rtt-target = {version="0.3.1", features = ["cortex-m"]}
-stm32-usbd = "0.6.0"
+embedded-alloc  = "0.5.0"
+
+# prints through jtag port+ panics
+# rtt-target = {version="0.3.1", features = ["cortex-m"]}
+defmt = "0.3.2"
+defmt-rtt = "0.4.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
 usb-device = "0.2.9"
 usbd-serial = "0.1.1"
-cortex-m-rtic = "1.1.3"
-panic-halt = "0.2.0"
 
-# defmt = "0.3.0"
-# defmt-rtt = "0.4.0"
-# panic-probe = { version = "0.3.0", features = ["print-defmt"] }
+# tcpip
+smoltcp = { version = "0.9.1", default-features = false, features = ["medium-ip","socket-udp","socket-tcp","proto-ipv4","alloc","defmt"] }
 
 
-[dependencies.stm32-hal2]
-version = "1.6.2"
-features = ["l412","l4rt","usb","embedded_hal"]  
+
+[dependencies.stm32l4xx-hal]
+version = "0.7.1"
+features = ["stm32l412","rt","stm32-usbd"]  
                          
 
 # this lets you use `cargo fix`!
@@ -40,7 +44,6 @@ debug-assertions = true # <-
 incremental = false
 opt-level = 3 # <-
 overflow-checks = true # <-
-
 
 
 [profile.release]

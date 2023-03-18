@@ -2,19 +2,15 @@
 #![no_main]
 
 
-use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
+use panic_rtt_target as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
 
-use cortex_m::{prelude::*, delay::Delay};
+use cortex_m::prelude::*;
 
-use stm32_hal2 as hal;
-use hal::gpio::{Pin,PinMode, Port};
-use hal::{
-    pac,
-    clocks::Clocks
-
-};
+use stm32l4xx_hal::{prelude::*, stm32,pac,hal::prelude::*};
+use stm32l4xx_hal::delay::Delay;
 use cortex_m_rt::entry;
 use rtt_target::{rprintln, rtt_init_print};
+
 
 
 #[entry]
@@ -25,13 +21,18 @@ fn main() -> ! {
         cortex_m::peripheral::Peripherals::take(),
     ) {
 
-        let clockcfg  = Clocks::default();
-        clockcfg.setup().unwrap();
+        let mut flash = dp.FLASH.constrain(); // .constrain();
+        let mut rcc = dp.RCC.constrain();
+        let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
+        let clocks = rcc.cfgr.sysclk(80.MHz()).freeze(&mut flash.acr, &mut pwr);
+
 
         
+        let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
+        
+        let mut led = gpioa.pa9.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
 
-        let mut led = Pin::new(Port::A,9,PinMode::Output);
-        let mut delay = Delay::new(cp.SYST,clockcfg.systick());
+        let mut delay = Delay::new(cp.SYST,clocks);
         
 
         loop {
