@@ -19,6 +19,11 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 //app
 mod server;
 mod intf;
+mod cdc_ncm;
+mod ncm_netif;
+
+use cdc_ncm::CdcNcmClass;
+use intf::UsbIp;
 use server::init_server;
 
 
@@ -96,48 +101,30 @@ fn main() -> ! {
     };
     let usb_bus = UsbBus::new(usb);
 
-    let mut serial = SerialPort::new(&usb_bus);
+    let mut ip = UsbIp::new(&usb_bus);
 
-    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
-        .manufacturer("Fake company")
-        .product("Serial port")
-        .serial_number("TEST")
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x0483, 0xffff))
+        .manufacturer("STMicroelectronics")
+        .product("IP over USB Demonstrator")
+        .serial_number("test")
         .device_class(USB_CLASS_CDC)
         .build();
 
-    println!("starting server...");
-    error!("checking");
-    init_server();
+    debug!("starting server...");
+    ip.send_connection_notify();
+    // init_server();
     loop {
-        if !usb_dev.poll(&mut [&mut serial]) {
+        if !usb_dev.poll(&mut [&mut ip]) {
             continue;
         }
+        // led.set_high(); // Turn on
+        // let mut buf = [0;64];
 
-        let mut buf = [0u8; 64];
+        // match ip.read_packet(&mut buf){
+        //     Ok(len)=>println!("got buf len {}",len),
+        //     Err(x) =>debug!("failure, got {:?}",x),
+        // };
 
-        match serial.read(&mut buf) {
-            Ok(count) if count > 0 => {
-                led.set_high(); // Turn on
-
-                // Echo back in upper case
-                for c in buf[0..count].iter_mut() {
-                    if 0x61 <= *c && *c <= 0x7a {
-                        *c &= !0x20;
-                    }
-                }
-
-                let mut write_offset = 0;
-                while write_offset < count {
-                    match serial.write(&buf[write_offset..count]) {
-                        Ok(len) if len > 0 => {
-                            write_offset += len;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
 
         led.set_low(); // Turn off
     }
