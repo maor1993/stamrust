@@ -4,15 +4,17 @@ use crate::cdc_ncm::{
 };
 use alloc::vec::Vec;
 use core::array::TryFromSliceError;
+use core::cell::RefCell;
 use core::mem::size_of;
 use defmt::debug;
 use usb_device::bus::UsbBus;
 use usb_device::class_prelude::*;
 extern crate alloc;
+const PAGE_SIZE: usize = 2048;
+
 
 pub type NCMResult<T> = core::result::Result<T, NCMError>;
 
-const PAGE_SIZE: usize = 2048;
 
 /// A USB stack error.
 #[derive(Debug)]
@@ -31,13 +33,6 @@ pub enum NCMError {
     RXError,
     TXError,
 }
-
-//example slice for a syn request:
-// [
-//             0x45, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x45, 0x64,
-//             0xc0, 0xa8, 0x45, 0x01, 0x9f, 0x6e, 0x1b, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-//             0xa0, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00
-//             ]
 
 #[derive(Clone, Copy)]
 struct CdcSpeedChangeBody {
@@ -90,11 +85,11 @@ struct UsbIpNotify {
     connection: NotifyHeader,
 }
 
-struct UsbIpIn {
+pub struct UsbIpIn {
     data: [PacketBuf; 2],
-    max_size: u32,
+    max_size: usize,
     rem_size: usize,
-    index: u16,
+    index: usize,
     page: u8,
     sequence: u16,
     send_state: NTBState,
@@ -102,7 +97,143 @@ struct UsbIpIn {
     fill_state: NTBState,
 }
 
-struct UsbIpOut {
+
+impl UsbIpIn{
+    fn ncm_sendntb(&mut self, page: u8) -> Result<&[u8], NCMError> {
+        if page >= 2u8 {
+            return Err(NCMError::PageError);
+        }
+
+        let currdataptr = &self.data[page as usize][0..];
+        let mut datagrams = Vec::<NCMDatagram16>::new();
+        let ptlen = size_of::<NCMDatagramPointerTable>()
+            + (self.dgcount as usize) * size_of::<NCMDatagram16>();
+
+
+        let nth = NCMTransferHeader {
+            signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
+            headerlen: size_of::<NCMTransferHeader>() as u16,
+            blocklen: (size_of::<NCMTransferHeader>() + self.index + ptlen) as u16,
+            sequence: self.sequence,
+            ndpidex: self.index as u16,
+        };
+        let dploc = self.get_dp_len_idx();
+
+        for i in self.dgcount as usize..0 {
+            datagrams.push(NCMDatagram16 {
+                index: 0,
+                length: u16::from_le_bytes(
+                    currdataptr[dploc + 2 * i..dploc + 2 + 2 * i]
+                        .try_into()
+                        .unwrap(),
+                ),
+            })
+        }
+        // let mut prev_index;
+        datagrams[0].index = size_of::<NCMTransferHeader>() as u16;
+
+        for i in 1..self.dgcount as usize {
+            datagrams[i].index = (datagrams[i - 1].index + datagrams[i - 1].length + 3) & 0xfffc;
+        }
+
+        datagrams.push(NCMDatagram16 {
+            index: 0,
+            length: 0,
+        });
+
+
+        let pt = NCMDatagramPointerTable {
+            signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
+            length: ptlen as u16,
+            nextndpindex: 0,
+            datagrams,
+        };
+
+        //start copying to data buffer
+        let ndppoint = self.index;
+
+        self.data[page as usize][0..].copy_from_slice(nth.conv_to_bytes().as_slice());
+        self.data[page as usize][ndppoint..].copy_from_slice(pt.conv_to_bytes().as_slice());
+
+        
+
+        //switch pages
+        self.page = 1 - page;
+        self.dgcount = 0;
+        self.index = size_of::<NCMTransferHeader>();
+        self.rem_size = self.max_size
+            - size_of::<NCMTransferHeader>()
+            - size_of::<NCMDatagramPointerTable>();
+        self.fill_state = NTBState::Empty;
+        self.send_state = NTBState::Transferring;
+
+        self.sequence += 2;
+
+        Ok(&self.data[page as usize])
+    }
+
+    pub fn ncm_setdatagram(&mut self) -> Result<(), NCMError> {
+        if self.fill_state == NTBState::Processing {
+            let page = self.page;
+
+            if self.send_state != NTBState::Empty {
+                self.fill_state = NTBState::Ready;
+            } else {
+                self.ncm_sendntb(page)?;
+            }
+        }
+        Ok(())
+    }
+
+
+    fn get_dp_len_idx(&self) -> usize {
+        size_of::<PacketBuf>() + (self.dgcount as usize * size_of::<u32>())
+    }
+    fn set_dp_len(&mut self, len: u16) {
+        let dploc = self.get_dp_len_idx();
+        self.data[self.page as usize][dploc..dploc + 2]
+            .copy_from_slice(&len.to_le_bytes());
+    }
+
+    pub fn ncm_allocdatagram(&mut self, len: usize) -> Result<&mut [u8], NCMError> {
+        //ensure all criteria has been met before starting
+
+        //FIXME: tunnel connection somehow
+        // if (self.notify.connection.value == 0)||
+        if
+            (len >= NCM_MAX_SEGMENT_SIZE)
+            || self.fill_state == NTBState::Processing
+        {
+            Err(NCMError::TXError)
+        } else {
+            // create a rolling length
+            let wlen = (len + 3) & 0x0000_fffc;
+            let addlen = wlen + size_of::<NCMDatagram16>();
+
+            //update the in state to processing.
+            self.fill_state = NTBState::Processing;
+            let page = self.page as usize;
+
+            //assuming there is enough room in buffer, push the new data page
+            if addlen <= self.rem_size {
+                self.dgcount += 1;
+                self.set_dp_len(len as u16);
+
+                let dataloc = self.index;
+                self.index += wlen;
+                self.rem_size -= addlen;
+
+                Ok(&mut self.data[page][dataloc..]) //fixme: there is no way to ensure we're not overlapping other messages
+            } else {
+                Err(NCMError::ArrayError)
+            }
+        }
+    }
+}
+
+
+
+pub struct UsbIpOut {
     data: [PacketBuf; 2],
     pt: Option<NCMDatagramPointerTable>,
     page: u8,
@@ -110,7 +241,74 @@ struct UsbIpOut {
     state: [NTBState; 2],
 }
 
+impl UsbIpOut{
+    pub fn updateptloc(&mut self, pt: NCMDatagramPointerTable) {
+        self.pt = Some(pt)
+    }
+
+    pub fn ncm_getdatagram(&self, data: &[u8]) -> usize {
+        // let page = self.page as usize;
+        let mut len = 0;
+        // match self.state[page]{
+        //     NTBState::Ready => self.state[page] = NTBState::Processing,
+        //     NTBState::Processing => {
+        //         if let Some(x) = &mut self.pt{
+        //             if(x.datagram[])
+        //         }
+        //     }
+
+        // }
+
+        // if self.state[page]== NTBState::Ready{
+        //     self.state[page] = NTBState::Processing;
+        // }
+        // else{
+
+        // }
+
+        len
+    }
+
+}
+
+
 type PacketBuf = [u8; PAGE_SIZE];
+
+
+trait ToBytes{
+    fn conv_to_bytes(&self) -> Vec<u8>;
+}
+
+impl ToBytes for NCMDatagramPointerTable{ 
+    fn conv_to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&self.signature.to_le_bytes());
+        bytes.extend_from_slice(&self.length.to_le_bytes());
+        bytes.extend_from_slice(&self.nextndpindex.to_le_bytes());
+
+        self.datagrams.iter().for_each(|x| {
+            bytes.extend_from_slice(x.index.to_le_bytes().as_slice());
+            bytes.extend_from_slice(x.length.to_le_bytes().as_slice());
+        });
+
+        bytes
+    }
+}
+
+impl ToBytes for NCMTransferHeader{
+    fn conv_to_bytes(&self) -> Vec<u8> {
+        let mut bytes =  Vec::<u8>::new();
+        bytes.extend_from_slice(&self.signature.to_le_bytes());
+        bytes.extend_from_slice(&self.headerlen.to_le_bytes());
+        bytes.extend_from_slice(&self.sequence.to_le_bytes());
+        bytes.extend_from_slice(&self.blocklen.to_le_bytes());
+        bytes.extend_from_slice(&self.ndpidex.to_le_bytes());
+
+
+        bytes
+    }
+}
+
 
 impl TryInto<NCMTransferHeader> for &[u8] {
     type Error = TryFromSliceError;
@@ -172,9 +370,11 @@ impl Default for UsbIpIn {
     fn default() -> Self {
         UsbIpIn {
             data: [[0; PAGE_SIZE], [0; PAGE_SIZE]],
-            max_size: 0,
-            rem_size: 0,
-            index: 0,
+            max_size: PAGE_SIZE,
+            rem_size: PAGE_SIZE
+                - size_of::<NCMTransferHeader>()
+                - size_of::<NCMDatagramPointerTable>(),
+            index: size_of::<NCMTransferHeader>(),
             page: 0,
             dgcount: 0,
             sequence: 0,
@@ -188,11 +388,9 @@ pub struct UsbIp<'a, B>
 where
     B: UsbBus,
 {
-    inner: CdcNcmClass<'a, B>,
-    read_buf: [u8; 128],
-    write_buf: [u8; 128],
-    ip_in: UsbIpIn,
-    ip_out: UsbIpOut,
+    pub inner: CdcNcmClass<'a, B>,
+    pub ip_in: RefCell<UsbIpIn>,
+    pub ip_out: RefCell<UsbIpOut>,
     notify: UsbIpNotify,
 }
 
@@ -201,13 +399,11 @@ where
     B: UsbBus,
 {
     /// Creates a new USB serial port with the provided UsbBus and 128 byte read/write buffers.
-    pub fn new(alloc: &UsbBusAllocator<B>) -> UsbIp<'_, B> {
+    pub fn new(alloc: &'_ UsbBusAllocator<B>) -> UsbIp<'_, B> {
         UsbIp {
             inner: CdcNcmClass::new(alloc),
-            read_buf: [0u8; 128],
-            write_buf: [0u8; 128],
-            ip_in: UsbIpIn::default(),
-            ip_out: UsbIpOut::default(),
+            ip_in: RefCell::new(UsbIpIn::default()),
+            ip_out: RefCell::new(UsbIpOut::default()),
             notify: UsbIpNotify {
                 speedchange: NotifyHeader {
                     requestype: 0xA1,
@@ -237,118 +433,27 @@ where
         self.inner.send_notification(data.as_slice());
     }
 
-    pub fn updateptloc(&mut self, pt: NCMDatagramPointerTable) {
-        self.ip_out.pt = Some(pt)
-    }
 
-    fn ncm_getdatagram(&mut self, data: &[u8]) -> usize {
-        // let page = self.ip_out.page as usize;
-        let mut len = 0;
-        // match self.ip_out.state[page]{
-        //     NTBState::Ready => self.ip_out.state[page] = NTBState::Processing,
-        //     NTBState::Processing => {
-        //         if let Some(x) = &mut self.ip_out.pt{
-        //             if(x.datagram[])
-        //         }
-        //     }
 
-        // }
 
-        // if self.ip_out.state[page]== NTBState::Ready{
-        //     self.ip_out.state[page] = NTBState::Processing;
-        // }
-        // else{
+    
 
-        // }
 
-        len
-    }
 
-    fn get_dp_len_idx(&self) -> usize {
-        size_of::<PacketBuf>() + (self.ip_in.dgcount as usize * size_of::<u32>())
-    }
-    fn set_dp_len(&mut self, len: u16) {
-        let dploc = self.get_dp_len_idx();
-        self.ip_in.data[self.ip_in.page as usize][dploc..dploc + 2]
-            .copy_from_slice(&len.to_le_bytes());
-    }
 
-    fn ncm_allocdatagram(&mut self, len: usize) -> Result<&[u8], NCMError> {
-        //ensure all criteria has been met before starting
-        if (self.notify.connection.value == 0)
-            || (len >= NCM_MAX_SEGMENT_SIZE)
-            || self.ip_in.fill_state == NTBState::Processing
-        {
-            Err(NCMError::TXError)
-        } else {
-            // create a rolling length
-            let wlen = (len + 3) & 0x0000_fffc;
-            let addlen = wlen + size_of::<NCMDatagram16>();
+    //TODO: these fucntions handle exit from stall, need to ensure if we even need it.
+    // pub fn ncm_indata(&mut self) -> Result<(), NCMError> {
+    //     self.ip_in.send_state = NTBState::Empty;
+    //     if self.ip_in.fill_state == NTBState::Ready{
+    //     }
+    //     Ok(())
+    // }
 
-            //update the in state to processing.
-            self.ip_in.fill_state = NTBState::Processing;
-            let page = self.ip_in.page as usize;
+    // pub fn ncm_outdata(&mut self) -> Result<(), NCMError>{
+    //     Ok(())
+    // }
 
-            //assuming there is enough room in buffer, push the new data page
-            if addlen <= self.ip_in.rem_size {
-                self.ip_in.dgcount += 1;
-                self.set_dp_len(len as u16);
 
-                let dataloc = self.ip_in.index as usize;
-                self.ip_in.index += wlen as u16;
-                self.ip_in.rem_size -= addlen;
-
-                Ok(&self.ip_in.data[page][dataloc..])
-            } else {
-                Err(NCMError::ArrayError)
-            }
-        }
-    }
-
-    fn ncm_setdatagram(&mut self) -> Result<(), NCMError> {
-        if self.ip_in.fill_state == NTBState::Processing {
-            let page = self.ip_in.page;
-
-            if (self.ip_in.send_state != NTBState::Empty) {
-                self.ip_in.fill_state = NTBState::Ready;
-            } else {
-                self.ncm_sendntb(page)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn ncm_sendntb(&mut self, page: u8) -> Result<(), NCMError> {
-        if page >= 2u8 {
-            return Err(NCMError::PageError);
-        }
-
-        let mut pt = NCMDatagramPointerTable {
-            signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
-            length: (size_of::<NCMDatagramPointerTable>()
-                + (self.ip_in.dgcount as usize) * size_of::<NCMDatagram16>())
-                as u16,
-            nextndpindex: 0,
-            datagrams: Vec::<NCMDatagram16>::new(),
-        };
-
-        let mut nth = NCMTransferHeader {
-            signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
-            headerlen: size_of::<NCMTransferHeader>() as u16,
-            blocklen: size_of::<NCMTransferHeader>() as u16 + self.ip_in.index + pt.length,
-            sequence: self.ip_in.sequence,
-            ndpidex: self.ip_in.index,
-        };
-
-        // for i in [0..self.ip_in.dgcount] {
-        //     pt.datagrams.push(NCMDatagram16 {
-        //         index: i,
-        //         length: (),
-        //     })
-        // }
-
-        Ok(())
-    }
 }
 
 impl<B> UsbClass<B> for UsbIp<'_, B>
@@ -361,8 +466,6 @@ where
 
     fn reset(&mut self) {
         self.inner.reset();
-        self.read_buf.fill(0);
-        self.write_buf.fill(0);
     }
 
     // fn endpoint_in_complete(&mut self, addr: EndpointAddress) {
@@ -379,4 +482,3 @@ where
         self.inner.control_out(xfer);
     }
 }
-

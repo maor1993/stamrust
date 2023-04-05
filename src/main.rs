@@ -2,29 +2,28 @@
 #![no_main]
 
 
+use core::borrow::BorrowMut;
+
+use cortex_m::interrupt::Mutex;
 //runtime
 use cortex_m_rt::entry;
-use defmt::*;
+use defmt::debug;
 use defmt_rtt as _;
 use panic_probe as _;
 use embedded_alloc::Heap;
-
-
 // hal
 use stm32l4xx_hal::usb::{Peripheral, UsbBus};
 use stm32l4xx_hal::{prelude::*, stm32};
 use usb_device::prelude::*;
-use usbd_serial::{SerialPort, USB_CLASS_CDC};
+use usbd_serial::USB_CLASS_CDC;
 
 //app
 mod server;
 mod intf;
 mod cdc_ncm;
 mod ncm_netif;
-
-use cdc_ncm::CdcNcmClass;
 use intf::UsbIp;
-use server::init_server;
+use server::TcpServer;
 
 
 
@@ -101,7 +100,7 @@ fn main() -> ! {
     };
     let usb_bus = UsbBus::new(usb);
 
-    let mut ip = UsbIp::new(&usb_bus);
+    let mut ip =  UsbIp::new(&usb_bus);
 
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x0483, 0xffff))
         .manufacturer("STMicroelectronics")
@@ -112,25 +111,16 @@ fn main() -> ! {
 
     debug!("starting server...");
     ip.send_connection_notify();
-    // init_server();
-    loop {
-        if !usb_dev.poll(&mut [&mut ip]) {
-            continue;
-        }
-        // led.set_high(); // Turn on
-        // let mut buf = [0;64];
-
-        // match ip.read_packet(&mut buf){
-        //     Ok(len)=>println!("got buf len {}",len),
-        //     Err(x) =>debug!("failure, got {:?}",x),
-        // };
-
-
-        led.set_low(); // Turn off
+    let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
+    loop{
+        usb_dev.poll(&mut [&mut ip.inner]);       
+        tcpserv.eth_task(); 
     }
+    
 }
 
 #[defmt::panic_handler]
 fn panic() -> ! {
     cortex_m::asm::udf()
 }
+

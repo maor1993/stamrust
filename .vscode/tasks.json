@@ -10,9 +10,8 @@
              * so we can invoke it from the debug launcher.
              */
             "label": "Cargo Build (debug)",
-            "type": "process",
-            "command": "cargo",
-            "args": ["build"],
+            "type": "shell",
+            "command": "export DEFMT_LOG=${input:dbglvl}; cargo build",
             "problemMatcher": [
                 "$rustc"
             ],
@@ -59,5 +58,18 @@
             "problemMatcher": [],
             "group": "build"
         },
+    ],
+    "inputs": [
+        {
+            "id": "dbglvl",
+            "type": "pickString",
+            "options": [
+                "debug",
+                "info",
+                "warning",
+                "error"
+            ],
+            "description": "set DEFMT Compilation debug level"
+        }
     ]
 }

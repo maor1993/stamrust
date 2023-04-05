@@ -1,61 +1,69 @@
+use core::cell::RefMut;
+
+use defmt::debug;
 use smoltcp::phy;
 use smoltcp::phy::{Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
-use defmt::debug;
+use crate::intf::{UsbIpIn, UsbIpOut};
 
-pub struct UsbIpPhy {
-    rx_buffer: [u8; 1536],
-    tx_buffer: [u8; 1536],
+pub struct UsbIpPhy<'a> {
+    pub tx: RefMut<'a,UsbIpIn>,
+    pub rx: RefMut<'a,UsbIpOut>,
 }
 
-impl UsbIpPhy {
-    pub fn new() -> UsbIpPhy {
-        UsbIpPhy {
-            rx_buffer: [0; 1536],
-            tx_buffer: [0; 1536],
-        }
+impl<'a> UsbIpPhy<'a> {
+    pub fn new(tx: RefMut<'a,UsbIpIn>,rx: RefMut<'a,UsbIpOut>) -> UsbIpPhy<'a> {
+        UsbIpPhy { tx ,rx}
     }
 }
 
-pub struct UsbIpPhyRxToken<'a>(&'a mut [u8]);
+pub struct UsbIpPhyRxToken<'a>(&'a mut UsbIpOut);
 
-impl<'a> phy::RxToken for UsbIpPhyRxToken<'a> {
-    fn consume<R, F>(mut self, f: F) -> R
+impl<'a> phy::RxToken for UsbIpPhyRxToken<'a>
+
+{
+    fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
         // TODO: receive packet into buffer
-        let result = f(self.0);
+        let mut buf: [u8; 1534] = [0; 1534];
+        let len = self.0.ncm_getdatagram(&mut buf);
+        debug!("Recieved {} bytes", len);
+        let result = f(&mut buf);
         result
     }
 }
 
-pub struct UsbIpPhyTxToken<'a>(&'a mut [u8]);
-
-impl<'a> phy::TxToken for UsbIpPhyTxToken<'a> {
+pub struct UsbIpPhyTxToken<'a>(&'a mut UsbIpIn);
+impl<'a, > phy::TxToken for UsbIpPhyTxToken<'a>
+{
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let result = f(&mut self.0[..len]);
+        let buf = self.0.ncm_allocdatagram(len).unwrap();
+        let result = f(buf);
         debug!("tx called {}", len);
-        debug!("{:?}", &self.0[..len]);
+        debug!("{:?}", &buf[..len]);
+        self.0.ncm_setdatagram().unwrap();
         result
     }
 }
 
 //TODO: implment a miliseconds! counter for timestamp
 
-impl Device for UsbIpPhy {
-    fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
-        Some(UsbIpPhyTxToken(&mut self.tx_buffer[..]))
+impl Device for UsbIpPhy<'_>
+{
+    fn transmit<'a>(&'_ mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
+        Some(UsbIpPhyTxToken(&mut self.tx))
     }
     fn receive(
         &mut self,
         _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         Some((
-            UsbIpPhyRxToken(&mut self.rx_buffer[..]),
-            UsbIpPhyTxToken(&mut self.tx_buffer[..]),
+            UsbIpPhyRxToken(&mut self.rx),
+            UsbIpPhyTxToken(&mut self.tx),
         ))
     }
     fn capabilities(&self) -> DeviceCapabilities {
