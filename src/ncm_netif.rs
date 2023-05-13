@@ -1,26 +1,24 @@
 use core::cell::RefMut;
 
+use crate::intf::{UsbIpIn, UsbIpOut};
 use defmt::debug;
 use smoltcp::phy;
 use smoltcp::phy::{Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
-use crate::intf::{UsbIpIn, UsbIpOut};
 
 pub struct UsbIpPhy<'a> {
-    pub tx: RefMut<'a,UsbIpIn>,
-    pub rx: RefMut<'a,UsbIpOut>,
+    pub tx: RefMut<'a, UsbIpIn>,
+    pub rx: RefMut<'a, UsbIpOut>,
 }
 
 impl<'a> UsbIpPhy<'a> {
-    pub fn new(tx: RefMut<'a,UsbIpIn>,rx: RefMut<'a,UsbIpOut>) -> UsbIpPhy<'a> {
-        UsbIpPhy { tx ,rx}
+    pub fn new(tx: RefMut<'a, UsbIpIn>, rx: RefMut<'a, UsbIpOut>) -> UsbIpPhy<'a> {
+        UsbIpPhy { tx, rx }
     }
 }
 
 pub struct UsbIpPhyRxToken<'a>(&'a mut UsbIpOut);
 
-impl<'a> phy::RxToken for UsbIpPhyRxToken<'a>
-
-{
+impl<'a> phy::RxToken for UsbIpPhyRxToken<'a> {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -29,14 +27,12 @@ impl<'a> phy::RxToken for UsbIpPhyRxToken<'a>
         let mut buf: [u8; 1534] = [0; 1534];
         let len = self.0.ncm_getdatagram(&mut buf);
         debug!("Recieved {} bytes", len);
-        let result = f(&mut buf);
-        result
+        f(&mut buf)
     }
 }
 
 pub struct UsbIpPhyTxToken<'a>(&'a mut UsbIpIn);
-impl<'a, > phy::TxToken for UsbIpPhyTxToken<'a>
-{
+impl<'a> phy::TxToken for UsbIpPhyTxToken<'a> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -52,8 +48,7 @@ impl<'a, > phy::TxToken for UsbIpPhyTxToken<'a>
 
 //TODO: implment a miliseconds! counter for timestamp
 
-impl Device for UsbIpPhy<'_>
-{
+impl Device for UsbIpPhy<'_> {
     fn transmit<'a>(&'_ mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         Some(UsbIpPhyTxToken(&mut self.tx))
     }
@@ -61,10 +56,7 @@ impl Device for UsbIpPhy<'_>
         &mut self,
         _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        Some((
-            UsbIpPhyRxToken(&mut self.rx),
-            UsbIpPhyTxToken(&mut self.tx),
-        ))
+        Some((UsbIpPhyRxToken(&mut self.rx), UsbIpPhyTxToken(&mut self.tx)))
     }
     fn capabilities(&self) -> DeviceCapabilities {
         let mut csum = ChecksumCapabilities::default();

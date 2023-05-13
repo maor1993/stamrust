@@ -187,7 +187,7 @@ impl UsbIpIn{
 
 
     fn get_dp_len_idx(&self) -> usize {
-        size_of::<PacketBuf>() + (self.dgcount as usize * size_of::<u32>())
+        size_of::<PacketBuf>() - (self.dgcount as usize * size_of::<u32>())
     }
     fn set_dp_len(&mut self, len: u16) {
         let dploc = self.get_dp_len_idx();
@@ -206,7 +206,7 @@ impl UsbIpIn{
         {
             Err(NCMError::TXError)
         } else {
-            // create a rolling length
+            // align allocated length to 32 bit boundary 
             let wlen = (len + 3) & 0x0000_fffc;
             let addlen = wlen + size_of::<NCMDatagram16>();
 
@@ -246,9 +246,18 @@ impl UsbIpOut{
         self.pt = Some(pt)
     }
 
-    pub fn ncm_getdatagram(&self, data: &[u8]) -> usize {
+    pub fn ncm_getdatagram(&self, data: &mut [u8]) -> usize {
         // let page = self.page as usize;
-        let mut len = 0;
+        let mut len = 48;
+
+       data[0..48].copy_from_slice(&[
+            0x45, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x45, 0x64,
+            0xc0, 0xa8, 0x45, 0x01, 0x9f, 0x6e, 0x1b, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xa0, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00                            
+            ]);
+
+
+
         // match self.state[page]{
         //     NTBState::Ready => self.state[page] = NTBState::Processing,
         //     NTBState::Processing => {
@@ -334,11 +343,11 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
             .to_vec()
             .windows(4)
             .map(|win| {
-                let dgram = NCMDatagram16 {
+                 NCMDatagram16 {
                     index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
                     length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
-                };
-                dgram
+                 }
+                
             })
             .collect::<Vec<NCMDatagram16>>();
 
@@ -428,9 +437,16 @@ where
         }
     }
 
-    pub fn send_connection_notify(&mut self) {
+    pub fn send_connection_notify(&mut self) -> usb_device::Result<usize> where {
         let data: [u8; size_of::<UsbIpNotify>()] = self.notify.try_into().unwrap();
-        self.inner.send_notification(data.as_slice());
+        self.inner.send_notification(data.as_slice())
+    }
+    
+    pub fn ncm_writeall(&mut self){
+        //check if there are is any data in buf
+
+
+
     }
 
 

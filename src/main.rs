@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-
 use core::borrow::BorrowMut;
 
 use cortex_m::interrupt::Mutex;
@@ -9,25 +8,22 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::entry;
 use defmt::debug;
 use defmt_rtt as _;
-use panic_probe as _;
 use embedded_alloc::Heap;
+use panic_probe as _;
 // hal
 use stm32l4xx_hal::usb::{Peripheral, UsbBus};
 use stm32l4xx_hal::{prelude::*, stm32};
 use usb_device::prelude::*;
-use usbd_serial::USB_CLASS_CDC;
+
 
 //app
-mod server;
-mod intf;
 mod cdc_ncm;
+use cdc_ncm::{CDC_SUBCLASS_NCM,USB_CLASS_CDC};
+mod intf;
 mod ncm_netif;
+mod server;
 use intf::UsbIp;
 use server::TcpServer;
-
-
-
-
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -54,12 +50,17 @@ fn enable_usb_pwr() {
     pwr.cr2.modify(|_, w| w.usv().set_bit());
 }
 
-fn init_heap(){
+fn init_heap() {
     use core::mem::MaybeUninit;
     const HEAP_SIZE: usize = 8192;
     #[link_section = ".ram2bss"]
     static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
     unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+}
+
+enum IpBootState {
+    Notify,
+    Normal,
 }
 
 #[entry]
@@ -100,27 +101,45 @@ fn main() -> ! {
     };
     let usb_bus = UsbBus::new(usb);
 
-    let mut ip =  UsbIp::new(&usb_bus);
+    let mut ip = UsbIp::new(&usb_bus);
 
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x0483, 0xffff))
         .manufacturer("STMicroelectronics")
         .product("IP over USB Demonstrator")
         .serial_number("test")
+        .device_release(0x0100)
         .device_class(USB_CLASS_CDC)
         .build();
 
     debug!("starting server...");
-    ip.send_connection_notify();
-    let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
-    loop{
-        usb_dev.poll(&mut [&mut ip.inner]);       
-        tcpserv.eth_task(); 
+    let mut state = IpBootState::Notify;
+    // let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
+    loop {
+        if usb_dev.poll(&mut [&mut ip.inner]) {
+            match state {
+                IpBootState::Notify => {
+                    if ip.send_connection_notify().is_ok() {
+                        debug!("Sent notify!");
+                        state = IpBootState::Normal
+                    }
+                }
+                IpBootState::Normal => {
+                    let mut buf = [0u8; 1024];
+                    if ip.inner.read_packet(buf.as_mut_slice()).is_ok() {
+                        debug!("got packet: {:?}", buf);
+                    }
+                }
+            }
+        }
+
+        // let buf = [0u8;1024];
+        // ip.inner.write_packet(&buf).unwrap();
+
+        // tcpserv.eth_task();
     }
-    
 }
 
 #[defmt::panic_handler]
 fn panic() -> ! {
     cortex_m::asm::udf()
 }
-

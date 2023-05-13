@@ -2,6 +2,7 @@ use core::mem::size_of;
 
 extern crate alloc;
 use alloc::vec::Vec;
+use defmt::debug;
 //cdc_ncm
 //an implmentation of the mcm mode for cdc
 use num_enum::TryFromPrimitive;
@@ -9,14 +10,13 @@ use num_enum::TryFromPrimitive;
 use usb_device::class_prelude::*;
 use usb_device::Result;
 
-
 /// This should be used as `device_class` when building the `UsbDevice`.
 
 //FIXME: a lot of these can be tkaen from original usb_acm rather than redefing..
 pub const USB_CLASS_CDC: u8 = 0x02;
 
 const USB_CLASS_CDC_DATA: u8 = 0x0a;
-const CDC_SUBCLASS_NCM: u8 = 0x0D;
+pub const CDC_SUBCLASS_NCM: u8 = 0x0D;
 const CDC_PROTOCOL_NONE: u8 = 0x00;
 
 const CS_INTERFACE: u8 = 0x24;
@@ -36,10 +36,8 @@ pub const NCM_MAX_OUT_SIZE: usize = 2048;
 pub const NTH16_SIGNATURE: &[u8] = "NCMH".as_bytes();
 pub const NDP16_SIGNATURE: &[u8] = "NCM0".as_bytes();
 
-
-
 #[repr(u8)]
-#[derive(Default,PartialEq)]
+#[derive(Default, PartialEq)]
 pub enum NTBState {
     #[default]
     Empty = 0,
@@ -48,7 +46,7 @@ pub enum NTBState {
     Ready = 3,
 }
 
-#[derive(TryFromPrimitive)]
+#[derive(Debug, defmt::Format, TryFromPrimitive)]
 #[repr(u8)]
 enum CDCRequests {
     GetNTBParameters = 128,
@@ -59,9 +57,11 @@ enum CDCRequests {
 pub struct CdcNcmClass<'a, B: UsbBus> {
     comm_if: InterfaceNumber,
     ned_ep: EndpointIn<'a, B>,
-    did_if: InterfaceNumber,
+    data_if: InterfaceNumber,
     read_ep: EndpointOut<'a, B>,
     write_ep: EndpointIn<'a, B>,
+    namestr: StringIndex,
+    macaddrstr: StringIndex,
 }
 
 #[repr(C)]
@@ -83,14 +83,12 @@ pub struct NCMDatagram16 {
 
 #[repr(C)]
 #[derive(Debug, Clone, Default)]
-pub struct NCMDatagramPointerTable{
+pub struct NCMDatagramPointerTable {
     pub signature: u32,
     pub length: u16,
     pub nextndpindex: u16,
-    pub datagrams:  Vec<NCMDatagram16>
+    pub datagrams: Vec<NCMDatagram16>,
 }
-
-
 
 #[repr(C, packed)]
 #[derive(Default)]
@@ -109,19 +107,19 @@ struct NCMParameters {
     ntb_out_max_datagrams: u16, /* Maximum number of datagrams in a single OUT NTB */
 }
 
-
 impl<B: UsbBus> CdcNcmClass<'_, B> {
     /// Creates a new CdcAcmClass with the provided UsbBus and max_packet_size in bytes. For
     pub fn new(alloc: &UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
         CdcNcmClass {
             comm_if: alloc.interface(),
-            ned_ep: alloc.interrupt(8, 20),
-            did_if: alloc.interface(),
+            ned_ep: alloc.interrupt(32, 20),
+            data_if: alloc.interface(),
             read_ep: alloc.bulk(64),
             write_ep: alloc.bulk(64),
+            namestr: alloc.string(),
+            macaddrstr: alloc.string(),
         }
     }
-
 
     /// Gets the maximum packet size in bytes.
     pub fn max_packet_size(&self) -> u16 {
@@ -144,15 +142,20 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
         self.write_ep.address()
     }
 
-    pub fn send_notification(&mut self,data: &[u8]) -> Result<usize>{
+    pub fn send_notification(&mut self, data: &[u8]) -> Result<usize> {
         self.ned_ep.write(data)
     }
-
-    
-
 }
 
 impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
+    fn get_string(&self, index: StringIndex, lang_id: u16) -> Option<&str> {
+        match index.into() {
+            4 => Some("IP Gateway"),
+            5 => Some("0080E1000000"),
+            _ => None,
+        }
+    }
+
     fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> Result<()> {
         /* Interface Association Descriptor */
         writer.iad(
@@ -160,14 +163,16 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             2,
             USB_CLASS_CDC,
             CDC_SUBCLASS_NCM,
-            CDC_PROTOCOL_NONE)?;
+            CDC_PROTOCOL_NONE,
+        )?;
 
         /* Comm Interface Descriptor */
         writer.interface(
             self.comm_if,
             USB_CLASS_CDC,
             CDC_SUBCLASS_NCM,
-            CDC_PROTOCOL_NONE)?;
+            CDC_PROTOCOL_NONE,
+        )?;
 
         /* Header Functional Descriptor */
         writer.write(
@@ -182,11 +187,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         /* Union Functional Descriptor */
         writer.write(
             CS_INTERFACE,
-            &[
-                CDC_TYPE_UNION,
-                0x00, // first interface is a slave
-                0x01, // first interface is a slave
-            ],
+            &[CDC_TYPE_UNION, self.comm_if.into(), self.data_if.into()],
         )?;
 
         /* Ethernet Networking Functional Descriptor */
@@ -194,14 +195,14 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             CS_INTERFACE,
             &[
                 ETH_NET_FUNC_DESC,
-                0x09,                                              //imacaddress
-                0x0,                                               //eth stats
-                0x0,                                               //eth stats
-                0x0,                                               //eth stats
-                0x0,                                               //eth stats
-                (NCM_MAX_SEGMENT_SIZE & 0x0000_00ff) as u8,        //max segment size
+                self.macaddrstr.into(),                     //imacaddress
+                0x0,                                        //eth stats
+                0x0,                                        //eth stats
+                0x0,                                        //eth stats
+                0x0,                                        //eth stats
+                (NCM_MAX_SEGMENT_SIZE & 0x0000_00ff) as u8, //max segment size
                 ((NCM_MAX_SEGMENT_SIZE & 0x0000_ff00) >> 8) as u8, //max segment size
-                0x0,                                               //mc filters?
+                0x0,                                        //mc filters?
                 0x0,
                 0x0, //power filters..?
             ],
@@ -212,7 +213,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             CS_INTERFACE,
             &[
                 0x1A, //ncm func desc
-                0x00,0x01, //ncm version
+                0x00, 0x01, //ncm version
                 0x00, //network capabilites
             ],
         )?;
@@ -220,11 +221,18 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         /* Notification Endpoint Descriptor */
         writer.endpoint(&self.ned_ep)?;
 
-        writer.interface_alt(self.did_if, 0, USB_CLASS_CDC_DATA, 0,0x01,None)?;
-        writer.interface_alt(self.did_if, 1, USB_CLASS_CDC_DATA, 0,0x01,None)?;
+        writer.interface_alt(self.data_if, 0, USB_CLASS_CDC_DATA, 0, 0x01, None)?;
+        writer.interface_alt(
+            self.data_if,
+            1,
+            USB_CLASS_CDC_DATA,
+            0,
+            0x01,
+            Some(self.namestr),
+        )?;
 
-        writer.endpoint(&self.write_ep)?;
         writer.endpoint(&self.read_ep)?;
+        writer.endpoint(&self.write_ep)?;
 
         Ok(())
     }
@@ -234,10 +242,13 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         let data = xfer.data();
 
         if req.request_type == control::RequestType::Class {
+            debug!("got request {}", req.request);
             if let Ok(_request) = CDCRequests::try_from_primitive(req.request) {
                 // gracefully accept the transfer and skip for now.
+                debug!("handled request {:?}", _request);
                 xfer.accept().ok();
             } else {
+                debug!("uhandled out request {}", req.request);
                 xfer.reject().ok();
             }
         }
@@ -247,6 +258,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         let req = xfer.request();
 
         if req.request_type == control::RequestType::Class {
+            debug!("got request {}", req.request);
             if let Ok(request) = CDCRequests::try_from_primitive(req.request) {
                 match request {
                     CDCRequests::GetNTBParameters => {
@@ -259,7 +271,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                                 ndp_in_divisor: 4,
                                 ndp_in_alignment: 4,
                                 ndp_in_payload_remainder: 0,
-                                ntb_out_maxsize: NCM_MAX_OUT_SIZE  as u32,
+                                ntb_out_maxsize: NCM_MAX_OUT_SIZE as u32,
                                 ndp_out_divisor: 4,
                                 ndp_out_alignment: 4,
                                 ndp_out_payload_remainder: 4,
@@ -268,22 +280,21 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                             };
 
                             data[0..2].copy_from_slice(&PARAMS.length.to_le_bytes());
-
                             data[2..4].copy_from_slice(&PARAMS.ntb_formats_supported.to_le_bytes());
                             data[4..8].copy_from_slice(&PARAMS.ntb_in_maxsize.to_le_bytes());
                             data[8..10].copy_from_slice(&PARAMS.ndp_in_divisor.to_le_bytes());
-                            data[10..12].copy_from_slice(&PARAMS.ndp_in_alignment.to_le_bytes());
-                            data[12..14]
+                            data[10..12]
                                 .copy_from_slice(&PARAMS.ndp_in_payload_remainder.to_le_bytes());
-
-                            data[14..18].copy_from_slice(&PARAMS.ntb_out_maxsize.to_le_bytes());
-                            data[18..20].copy_from_slice(&PARAMS.ndp_out_divisor.to_le_bytes());
-                            data[20..22].copy_from_slice(&PARAMS.ndp_out_alignment.to_le_bytes());
+                            data[12..14].copy_from_slice(&PARAMS.ndp_in_alignment.to_le_bytes());
+                            data[14..16].copy_from_slice(&PARAMS.reserved.to_le_bytes());
+                            data[16..20].copy_from_slice(&PARAMS.ntb_out_maxsize.to_le_bytes());
+                            data[20..22].copy_from_slice(&PARAMS.ndp_out_divisor.to_le_bytes());
                             data[22..24]
                                 .copy_from_slice(&PARAMS.ndp_out_payload_remainder.to_le_bytes());
-                            data[24..26]
+                            data[24..26].copy_from_slice(&PARAMS.ndp_out_alignment.to_le_bytes());
+                            data[26..28]
                                 .copy_from_slice(&PARAMS.ntb_out_max_datagrams.to_le_bytes());
-                            data[26..28].copy_from_slice(&PARAMS.reserved.to_le_bytes());
+
                             Ok(LEN)
                         })
                         .ok();
@@ -301,8 +312,20 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                     }
                 }
             } else {
+                debug!("uhandled in request {}", req.request);
                 xfer.reject().ok();
             }
         }
+    }
+    fn get_alt_setting(&mut self, interface: InterfaceNumber) -> Option<u8> {
+        if interface == self.data_if {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    fn set_alt_setting(&mut self, interface: InterfaceNumber, alternative: u8) -> bool {
+        (interface,alternative) == (self.data_if,1)
+
     }
 }
