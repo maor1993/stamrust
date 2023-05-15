@@ -12,9 +12,7 @@ use usb_device::class_prelude::*;
 extern crate alloc;
 const PAGE_SIZE: usize = 2048;
 
-
 pub type NCMResult<T> = core::result::Result<T, NCMError>;
-
 
 /// A USB stack error.
 #[derive(Debug)]
@@ -52,40 +50,80 @@ struct NotifyHeader {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CdcSpeedChangeMsg {
-    speedchange: NotifyHeader,
-    speeddata: CdcSpeedChangeBody,
-}
-
-impl TryInto<[u8; size_of::<UsbIpNotify>()]> for UsbIpNotify {
-    type Error = TryFromSliceError;
-    fn try_into(self) -> Result<[u8; size_of::<UsbIpNotify>()], Self::Error> {
-        const ARRLEN: usize = size_of::<UsbIpNotify>();
-        let mut arr: [u8; ARRLEN] = [0; ARRLEN];
-        arr[0] = self.speedchange.requestype;
-        arr[1] = self.speedchange.notificationtype;
-        arr[2..4].copy_from_slice(&self.speedchange.value.to_le_bytes());
-        arr[4..6].copy_from_slice(&self.speedchange.index.to_le_bytes());
-        arr[6..8].copy_from_slice(&self.speedchange.length.to_le_bytes());
-        arr[8..12].copy_from_slice(&self.speeddata.bitrate_dl.to_le_bytes());
-        arr[12..16].copy_from_slice(&self.speeddata.bitrate_ul.to_le_bytes());
-        arr[16] = self.speedchange.requestype;
-        arr[17] = self.speedchange.notificationtype;
-        arr[18..20].copy_from_slice(&self.speedchange.value.to_le_bytes());
-        arr[20..22].copy_from_slice(&self.speedchange.index.to_le_bytes());
-        arr[22..24].copy_from_slice(&self.speedchange.length.to_le_bytes());
-        Ok(arr)
-    }
+    header: NotifyHeader,
+    body: CdcSpeedChangeBody,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct UsbIpNotify {
-    speedchange: NotifyHeader,
-    speeddata: CdcSpeedChangeBody,
-    connection: NotifyHeader,
+struct CdcConnectionNotifyMsg {
+    header: NotifyHeader,
+}
+
+impl Default for CdcSpeedChangeMsg {
+    fn default() -> Self {
+        CdcSpeedChangeMsg {
+            header: NotifyHeader {
+                requestype: 0xA1,
+                notificationtype: 0x2A,
+                value: 1,
+                index: 1,
+                length: size_of::<CdcSpeedChangeBody>() as u16,
+            },
+            body: CdcSpeedChangeBody {
+                bitrate_dl: 10 * 1000000,
+                bitrate_ul: 10 * 1000000,
+            },
+        }
+    }
+}
+
+impl TryInto<[u8; size_of::<CdcSpeedChangeMsg>()]> for CdcSpeedChangeMsg {
+    type Error = TryFromSliceError;
+    fn try_into(self) -> Result<[u8; size_of::<CdcSpeedChangeMsg>()], Self::Error> {
+        const ARRLEN: usize = size_of::<CdcSpeedChangeMsg>();
+        let mut arr: [u8; ARRLEN] = [0; ARRLEN];
+        arr[0] = self.header.requestype;
+        arr[1] = self.header.notificationtype;
+        arr[2..4].copy_from_slice(&self.header.value.to_le_bytes());
+        arr[4..6].copy_from_slice(&self.header.index.to_le_bytes());
+        arr[6..8].copy_from_slice(&self.header.length.to_le_bytes());
+        arr[8..12].copy_from_slice(&self.body.bitrate_dl.to_le_bytes());
+        arr[12..16].copy_from_slice(&self.body.bitrate_ul.to_le_bytes());
+        Ok(arr)
+    }
+}
+
+impl Default for CdcConnectionNotifyMsg {
+    fn default() -> Self {
+        CdcConnectionNotifyMsg {
+            header: NotifyHeader {
+                requestype: 0xA1,
+                notificationtype: 0x00,
+                value: 1,
+                index: 1,
+                length: 0,
+            },
+        }
+    }
+}
+
+impl TryInto<[u8; size_of::<CdcConnectionNotifyMsg>()]> for CdcConnectionNotifyMsg {
+    type Error = TryFromSliceError;
+    fn try_into(self) -> Result<[u8; size_of::<CdcConnectionNotifyMsg>()], Self::Error> {
+        const ARRLEN: usize = size_of::<CdcConnectionNotifyMsg>();
+        let mut arr: [u8; ARRLEN] = [0; ARRLEN];
+        arr[0] = self.header.requestype;
+        arr[1] = self.header.notificationtype;
+        arr[2..4].copy_from_slice(&self.header.value.to_le_bytes());
+        arr[4..6].copy_from_slice(&self.header.index.to_le_bytes());
+        arr[6..8].copy_from_slice(&self.header.length.to_le_bytes());
+        Ok(arr)
+    }
 }
 
 pub struct UsbIpIn {
+    is_conn: bool,
     data: [PacketBuf; 2],
     max_size: usize,
     rem_size: usize,
@@ -97,8 +135,7 @@ pub struct UsbIpIn {
     fill_state: NTBState,
 }
 
-
-impl UsbIpIn{
+impl UsbIpIn {
     fn ncm_sendntb(&mut self, page: u8) -> Result<&[u8], NCMError> {
         if page >= 2u8 {
             return Err(NCMError::PageError);
@@ -108,7 +145,6 @@ impl UsbIpIn{
         let mut datagrams = Vec::<NCMDatagram16>::new();
         let ptlen = size_of::<NCMDatagramPointerTable>()
             + (self.dgcount as usize) * size_of::<NCMDatagram16>();
-
 
         let nth = NCMTransferHeader {
             signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
@@ -141,7 +177,6 @@ impl UsbIpIn{
             length: 0,
         });
 
-
         let pt = NCMDatagramPointerTable {
             signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
             length: ptlen as u16,
@@ -155,15 +190,12 @@ impl UsbIpIn{
         self.data[page as usize][0..].copy_from_slice(nth.conv_to_bytes().as_slice());
         self.data[page as usize][ndppoint..].copy_from_slice(pt.conv_to_bytes().as_slice());
 
-        
-
         //switch pages
         self.page = 1 - page;
         self.dgcount = 0;
         self.index = size_of::<NCMTransferHeader>();
-        self.rem_size = self.max_size
-            - size_of::<NCMTransferHeader>()
-            - size_of::<NCMDatagramPointerTable>();
+        self.rem_size =
+            self.max_size - size_of::<NCMTransferHeader>() - size_of::<NCMDatagramPointerTable>();
         self.fill_state = NTBState::Empty;
         self.send_state = NTBState::Transferring;
 
@@ -185,28 +217,24 @@ impl UsbIpIn{
         Ok(())
     }
 
-
     fn get_dp_len_idx(&self) -> usize {
         size_of::<PacketBuf>() - (self.dgcount as usize * size_of::<u32>())
     }
     fn set_dp_len(&mut self, len: u16) {
         let dploc = self.get_dp_len_idx();
-        self.data[self.page as usize][dploc..dploc + 2]
-            .copy_from_slice(&len.to_le_bytes());
+        self.data[self.page as usize][dploc..dploc + 2].copy_from_slice(&len.to_le_bytes());
     }
 
     pub fn ncm_allocdatagram(&mut self, len: usize) -> Result<&mut [u8], NCMError> {
         //ensure all criteria has been met before starting
 
-        //FIXME: tunnel connection somehow
-        // if (self.notify.connection.value == 0)||
-        if
-            (len >= NCM_MAX_SEGMENT_SIZE)
+        if (!self.is_conn)
+            || (len >= NCM_MAX_SEGMENT_SIZE)
             || self.fill_state == NTBState::Processing
         {
             Err(NCMError::TXError)
         } else {
-            // align allocated length to 32 bit boundary 
+            // align allocated length to 32 bit boundary
             let wlen = (len + 3) & 0x0000_fffc;
             let addlen = wlen + size_of::<NCMDatagram16>();
 
@@ -229,9 +257,11 @@ impl UsbIpIn{
             }
         }
     }
+
+    pub fn set_connection_state(&mut self, connected: bool) {
+        self.is_conn = connected;
+    }
 }
-
-
 
 pub struct UsbIpOut {
     data: [PacketBuf; 2],
@@ -241,7 +271,7 @@ pub struct UsbIpOut {
     state: [NTBState; 2],
 }
 
-impl UsbIpOut{
+impl UsbIpOut {
     pub fn updateptloc(&mut self, pt: NCMDatagramPointerTable) {
         self.pt = Some(pt)
     }
@@ -250,13 +280,12 @@ impl UsbIpOut{
         // let page = self.page as usize;
         let mut len = 48;
 
-       data[0..48].copy_from_slice(&[
-            0x45, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x45, 0x64,
-            0xc0, 0xa8, 0x45, 0x01, 0x9f, 0x6e, 0x1b, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0xa0, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00                            
-            ]);
-
-
+        data[0..48].copy_from_slice(&[
+            0x45, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8,
+            0x45, 0x64, 0xc0, 0xa8, 0x45, 0x01, 0x9f, 0x6e, 0x1b, 0x12, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xa0, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03,
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
 
         // match self.state[page]{
         //     NTBState::Ready => self.state[page] = NTBState::Processing,
@@ -277,18 +306,15 @@ impl UsbIpOut{
 
         len
     }
-
 }
-
 
 type PacketBuf = [u8; PAGE_SIZE];
 
-
-trait ToBytes{
+trait ToBytes {
     fn conv_to_bytes(&self) -> Vec<u8>;
 }
 
-impl ToBytes for NCMDatagramPointerTable{ 
+impl ToBytes for NCMDatagramPointerTable {
     fn conv_to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.signature.to_le_bytes());
@@ -304,20 +330,18 @@ impl ToBytes for NCMDatagramPointerTable{
     }
 }
 
-impl ToBytes for NCMTransferHeader{
+impl ToBytes for NCMTransferHeader {
     fn conv_to_bytes(&self) -> Vec<u8> {
-        let mut bytes =  Vec::<u8>::new();
+        let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.signature.to_le_bytes());
         bytes.extend_from_slice(&self.headerlen.to_le_bytes());
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
         bytes.extend_from_slice(&self.blocklen.to_le_bytes());
         bytes.extend_from_slice(&self.ndpidex.to_le_bytes());
 
-
         bytes
     }
 }
-
 
 impl TryInto<NCMTransferHeader> for &[u8] {
     type Error = TryFromSliceError;
@@ -342,12 +366,9 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
         let datagrams = self[8..(length as usize)]
             .to_vec()
             .windows(4)
-            .map(|win| {
-                 NCMDatagram16 {
-                    index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
-                    length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
-                 }
-                
+            .map(|win| NCMDatagram16 {
+                index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
+                length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
             })
             .collect::<Vec<NCMDatagram16>>();
 
@@ -378,6 +399,7 @@ impl Default for UsbIpOut {
 impl Default for UsbIpIn {
     fn default() -> Self {
         UsbIpIn {
+            is_conn: false,
             data: [[0; PAGE_SIZE], [0; PAGE_SIZE]],
             max_size: PAGE_SIZE,
             rem_size: PAGE_SIZE
@@ -400,7 +422,6 @@ where
     pub inner: CdcNcmClass<'a, B>,
     pub ip_in: RefCell<UsbIpIn>,
     pub ip_out: RefCell<UsbIpOut>,
-    notify: UsbIpNotify,
 }
 
 impl<B> UsbIp<'_, B>
@@ -413,49 +434,25 @@ where
             inner: CdcNcmClass::new(alloc),
             ip_in: RefCell::new(UsbIpIn::default()),
             ip_out: RefCell::new(UsbIpOut::default()),
-            notify: UsbIpNotify {
-                speedchange: NotifyHeader {
-                    requestype: 0xA1,
-                    notificationtype: 0x2A,
-                    value: 1,
-                    index: 1,
-                    length: size_of::<CdcSpeedChangeBody>() as u16,
-                },
-                speeddata: CdcSpeedChangeBody {
-                    bitrate_dl: 10 * 1000000,
-                    bitrate_ul: 10 * 1000000,
-                },
-
-                connection: NotifyHeader {
-                    requestype: 0xA1,
-                    notificationtype: 0x00,
-                    value: 1,
-                    index: 1,
-                    length: 0,
-                },
-            },
         }
     }
 
-    pub fn send_connection_notify(&mut self) -> usb_device::Result<usize> where {
-        let data: [u8; size_of::<UsbIpNotify>()] = self.notify.try_into().unwrap();
-        self.inner.send_notification(data.as_slice())
+    pub fn send_speed_notificaiton(&mut self) -> usb_device::Result<usize> where {
+        let speedmsg: [u8; size_of::<CdcSpeedChangeMsg>()] =
+            CdcSpeedChangeMsg::default().try_into().unwrap();
+        self.inner.send_notification(speedmsg.as_slice())
     }
-    
-    pub fn ncm_writeall(&mut self){
+    pub fn send_connection_notificaiton(&mut self) -> usb_device::Result<usize> where {
+        //update internal state as connected
+        self.ip_in.borrow_mut().set_connection_state(true);
+        let conmsg: [u8; size_of::<CdcConnectionNotifyMsg>()] =
+            CdcConnectionNotifyMsg::default().try_into().unwrap();
+        self.inner.send_notification(conmsg.as_slice())
+    }
+
+    pub fn ncm_writeall(&mut self) {
         //check if there are is any data in buf
-
-
-
     }
-
-
-
-
-    
-
-
-
 
     //TODO: these fucntions handle exit from stall, need to ensure if we even need it.
     // pub fn ncm_indata(&mut self) -> Result<(), NCMError> {
@@ -468,8 +465,6 @@ where
     // pub fn ncm_outdata(&mut self) -> Result<(), NCMError>{
     //     Ok(())
     // }
-
-
 }
 
 impl<B> UsbClass<B> for UsbIp<'_, B>

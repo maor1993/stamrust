@@ -41,20 +41,15 @@
             "cwd": "${workspaceRoot}",
             "preLaunchTask": "Cargo Build (debug)",
             "executable": "target/thumbv7em-none-eabi/debug/stamrust",
-            "gdbTarget": "192.168.1.44:3333",
+            "gdbTarget": "192.168.192.42:3333",
             "device": "STM32L412KBU6",
             "svdFile": "${workspaceRoot}/.vscode/STM32L4x2.svd",
-            "rttConfig": {
-                "enabled": true,
-                "address": "auto",
-                "decoders": [
-                    {
-                        "label": "port0",
-                        "port": 0,
-                        "type": "console",
-                    }
-                ]
-            },
+            "postLaunchCommands": [
+                "monitor rtt server start 8765 0",
+                // should span the *right* part of RAM
+                "monitor rtt setup 0x20000000 0x30 \"SEGGER RTT\"",
+                "monitor rtt start",    
+            ],
         }
     ],
 

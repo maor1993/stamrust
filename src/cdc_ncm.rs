@@ -242,13 +242,13 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         let data = xfer.data();
 
         if req.request_type == control::RequestType::Class {
-            debug!("got request {}", req.request);
+            debug!("set request {:08x}", req.request);
             if let Ok(_request) = CDCRequests::try_from_primitive(req.request) {
                 // gracefully accept the transfer and skip for now.
-                debug!("handled request {:?}", _request);
+                debug!("handled request {:08x}", _request);
                 xfer.accept().ok();
             } else {
-                debug!("uhandled out request {}", req.request);
+                debug!("uhandled out request {:08x}", req.request);
                 xfer.reject().ok();
             }
         }
@@ -258,7 +258,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         let req = xfer.request();
 
         if req.request_type == control::RequestType::Class {
-            debug!("got request {}", req.request);
+            debug!("get request {:08x}", req.request);
             if let Ok(request) = CDCRequests::try_from_primitive(req.request) {
                 match request {
                     CDCRequests::GetNTBParameters => {

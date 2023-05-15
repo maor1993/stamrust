@@ -15,10 +15,9 @@ use stm32l4xx_hal::usb::{Peripheral, UsbBus};
 use stm32l4xx_hal::{prelude::*, stm32};
 use usb_device::prelude::*;
 
-
 //app
 mod cdc_ncm;
-use cdc_ncm::{CDC_SUBCLASS_NCM,USB_CLASS_CDC};
+use cdc_ncm::{CDC_SUBCLASS_NCM, USB_CLASS_CDC};
 mod intf;
 mod ncm_netif;
 mod server;
@@ -59,6 +58,7 @@ fn init_heap() {
 }
 
 enum IpBootState {
+    Speed,
     Notify,
     Normal,
 }
@@ -112,15 +112,20 @@ fn main() -> ! {
         .build();
 
     debug!("starting server...");
-    let mut state = IpBootState::Notify;
+    let mut state = IpBootState::Speed;
     // let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
     loop {
         if usb_dev.poll(&mut [&mut ip.inner]) {
             match state {
+                IpBootState::Speed => {
+                    if ip.send_speed_notificaiton().is_ok() {
+                        state = IpBootState::Notify
+                    }
+                }
                 IpBootState::Notify => {
-                    if ip.send_connection_notify().is_ok() {
+                    if ip.send_connection_notificaiton().is_ok() {
+                        state = IpBootState::Normal;
                         debug!("Sent notify!");
-                        state = IpBootState::Normal
                     }
                 }
                 IpBootState::Normal => {
