@@ -346,6 +346,12 @@ impl ToBytes for NCMTransferHeader {
 impl TryInto<NCMTransferHeader> for &[u8] {
     type Error = TryFromSliceError;
     fn try_into(self) -> Result<NCMTransferHeader, Self::Error> {
+        let signature = u32::from_le_bytes(self[0..4].try_into()?);
+        if signature != u32::from_le_bytes(NTH16_SIGNATURE.try_into()?) {
+            panic!("wrong signature");
+        } 
+
+
         Ok(NCMTransferHeader {
             signature: u32::from_le_bytes(self[0..4].try_into()?),
             headerlen: u16::from_le_bytes(self[4..6].try_into()?),
@@ -363,6 +369,10 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
         let length = u16::from_le_bytes(self[4..6].try_into()?);
         let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
 
+        if signature != u32::from_le_bytes(NDP16_SIGNATURE.try_into()?) {
+            panic!("wrong signature"); //FIXME: replace panic with custom error
+        }
+
         let datagrams = self[8..(length as usize)]
             .to_vec()
             .windows(4)
@@ -372,9 +382,7 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
             })
             .collect::<Vec<NCMDatagram16>>();
 
-        if signature != u32::from_le_bytes(NTH16_SIGNATURE.try_into()?) {
-            panic!("wrong signature");
-        }
+
 
         Ok(NCMDatagramPointerTable {
             signature,

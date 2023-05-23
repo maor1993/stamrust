@@ -24,6 +24,10 @@ mod server;
 use intf::UsbIp;
 use server::TcpServer;
 
+use crate::cdc_ncm::{
+    NCMDatagramPointerTable, NCMTransferHeader, EP_DATA_BUF_SIZE, NCM_MAX_OUT_SIZE,
+};
+
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
@@ -61,6 +65,13 @@ enum IpBootState {
     Speed,
     Notify,
     Normal,
+}
+
+enum IpRxState {
+    AwaitHeader,
+    LocateDataStart,
+    CollectData,
+    Reply,
 }
 
 #[entry]
@@ -112,26 +123,85 @@ fn main() -> ! {
         .build();
 
     debug!("starting server...");
-    let mut state = IpBootState::Speed;
+    let mut bootstate = IpBootState::Speed;
+    let mut rxstate = IpRxState::AwaitHeader;
+    let mut currheader = NCMTransferHeader::default();
+    let mut currndp = NCMDatagramPointerTable::default();
+    let mut currcnt = 0;
+    let mut packetbuf = [0u8; NCM_MAX_OUT_SIZE];
+    let mut bytes_copied = 0;
     // let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
     loop {
         if usb_dev.poll(&mut [&mut ip.inner]) {
-            match state {
+            match bootstate {
                 IpBootState::Speed => {
                     if ip.send_speed_notificaiton().is_ok() {
-                        state = IpBootState::Notify
+                        bootstate = IpBootState::Notify
                     }
                 }
                 IpBootState::Notify => {
                     if ip.send_connection_notificaiton().is_ok() {
-                        state = IpBootState::Normal;
+                        bootstate = IpBootState::Normal;
                         debug!("Sent notify!");
                     }
                 }
                 IpBootState::Normal => {
-                    let mut buf = [0u8; 1024];
-                    if ip.inner.read_packet(buf.as_mut_slice()).is_ok() {
-                        debug!("got packet: {:?}", buf);
+                    let mut rxbuf = [0u8; EP_DATA_BUF_SIZE];
+
+                    if let Ok(size) = ip.inner.read_packet(rxbuf.as_mut_slice()) {
+                        // debug!("got packet: {:x},size {}", rxbuf[0..size], size);
+
+
+
+
+
+                        match rxstate {
+                            IpRxState::AwaitHeader => {
+                                currheader = rxbuf[0..size].try_into().unwrap();
+                                debug!("got message: {:?}", currheader);
+                                currndp = rxbuf[(currheader.ndpidex as usize)..size]
+                                    .try_into()
+                                    .unwrap();
+                                debug!("got ndp: {:?}", currndp);
+                                if (currndp.datagrams[0].index as usize) < size {
+                                    let diff = size - currndp.datagrams[0].index as usize;
+                                    // the message starts in this packet, we can skip the locate state
+                                    packetbuf[0..diff].copy_from_slice(&rxbuf[currndp.datagrams[0].index as usize..size]);
+                                    bytes_copied += diff;
+                                    // debug!("copied {} bytes",bytes_copied);
+                                    rxstate = IpRxState::CollectData;
+                                }else{
+                                    currcnt = currndp.datagrams[0].index as usize - size; // start counting backwards until we reach the datagram
+                                    rxstate = IpRxState::LocateDataStart;
+                                }   
+                            }
+                            IpRxState::LocateDataStart => {
+                                if currcnt <= size {
+                                    // the start of the datagram is located on this packet, start collecting to buffer
+                                    let diff = size - currcnt;
+                                    packetbuf[0..diff].copy_from_slice(&rxbuf[currcnt..size]);
+                                    bytes_copied += diff;
+                                    rxstate = IpRxState::CollectData;
+                                } else {
+                                    currcnt -= size;
+                                }
+                            }
+                            IpRxState::CollectData => {
+                                let bytes_to_copy =(currndp.datagrams[0].length as usize - bytes_copied).min(size); 
+                                packetbuf[bytes_copied..bytes_copied+bytes_to_copy].copy_from_slice(&rxbuf[0..bytes_to_copy]);
+                                // debug!("copied {} bytes",bytes_copied);
+                                bytes_copied += bytes_to_copy;
+                                if currndp.datagrams[0].length as usize == bytes_copied {
+                                    debug!(
+                                        "finished copying message: {:x}",
+                                        packetbuf[0..currndp.datagrams[0].length as usize]
+                                    );
+                                    bytes_copied = 0;
+                                    rxstate = IpRxState::AwaitHeader;
+                                }
+                            }
+                            IpRxState::Reply => {}
+                        }
                     }
                 }
             }

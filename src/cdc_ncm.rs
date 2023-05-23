@@ -1,8 +1,10 @@
+use core::mem;
 use core::mem::size_of;
 
 extern crate alloc;
 use alloc::vec::Vec;
 use defmt::debug;
+use defmt::Format;
 //cdc_ncm
 //an implmentation of the mcm mode for cdc
 use num_enum::TryFromPrimitive;
@@ -36,6 +38,8 @@ pub const NCM_MAX_OUT_SIZE: usize = 2048;
 pub const NTH16_SIGNATURE: &[u8] = "NCMH".as_bytes();
 pub const NDP16_SIGNATURE: &[u8] = "NCM0".as_bytes();
 
+pub const EP_DATA_BUF_SIZE: usize = 64;
+
 #[repr(u8)]
 #[derive(Default, PartialEq)]
 pub enum NTBState {
@@ -65,7 +69,7 @@ pub struct CdcNcmClass<'a, B: UsbBus> {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug,defmt::Format, Clone, Default)]
 pub struct NCMTransferHeader {
     pub signature: u32,
     pub headerlen: u16,
@@ -75,14 +79,14 @@ pub struct NCMTransferHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug,defmt::Format, Clone, Default)]
 pub struct NCMDatagram16 {
     pub index: u16,
     pub length: u16,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug,defmt::Format, Clone, Default)]
 pub struct NCMDatagramPointerTable {
     pub signature: u32,
     pub length: u16,
@@ -114,8 +118,8 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
             comm_if: alloc.interface(),
             ned_ep: alloc.interrupt(32, 20),
             data_if: alloc.interface(),
-            read_ep: alloc.bulk(64),
-            write_ep: alloc.bulk(64),
+            read_ep: alloc.bulk(EP_DATA_BUF_SIZE as u16),
+            write_ep: alloc.bulk(EP_DATA_BUF_SIZE as u16),
             namestr: alloc.string(),
             macaddrstr: alloc.string(),
         }
@@ -275,7 +279,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                                 ndp_out_divisor: 4,
                                 ndp_out_alignment: 4,
                                 ndp_out_payload_remainder: 4,
-                                ntb_out_max_datagrams: 20,
+                                ntb_out_max_datagrams: 1, //FIXME: change back to 20 once multiple datagrams are supported
                                 reserved: 0,
                             };
 
