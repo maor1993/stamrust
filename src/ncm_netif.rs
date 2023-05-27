@@ -1,77 +1,102 @@
-use core::cell::RefMut;
+use defmt::println;
+use smoltcp::phy::{self, DeviceCapabilities, Medium};
+use smoltcp::time::Instant;
+extern crate alloc;
+use core::cell::RefCell;
 
-use crate::intf::{UsbIpIn, UsbIpOut};
-use defmt::debug;
-use smoltcp::phy;
-use smoltcp::phy::{Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
+const MTU: usize = 1536;
 
-pub struct UsbIpPhy<'a> {
-    pub tx: RefMut<'a, UsbIpIn>,
-    pub rx: RefMut<'a, UsbIpOut>,
+#[derive(PartialEq)]
+pub enum BufState {
+    Empty,
+    Writing,
+    Await,
 }
 
-impl<'a> UsbIpPhy<'a> {
-    pub fn new(tx: RefMut<'a, UsbIpIn>, rx: RefMut<'a, UsbIpOut>) -> UsbIpPhy<'a> {
-        UsbIpPhy { tx, rx }
+pub struct SyncBuf {
+    pub busy: BufState,
+    pub buf: [u8; MTU],
+}
+
+impl Default for SyncBuf {
+    fn default() -> Self {
+        Self {
+            busy: BufState::Empty,
+            buf: [0u8; MTU],
+        }
+    }
+}
+pub struct StmPhy {
+    pub rxbuf: RefCell<SyncBuf>,
+    pub txbuf: RefCell<SyncBuf>,
+}
+
+impl StmPhy {
+    pub fn new() -> StmPhy {
+        StmPhy {
+            rxbuf: RefCell::<SyncBuf>::new(SyncBuf::default()),
+            txbuf: RefCell::<SyncBuf>::new(SyncBuf::default()),
+        }
     }
 }
 
-pub struct UsbIpPhyRxToken<'a>(&'a mut UsbIpOut);
+impl phy::Device for StmPhy {
+    type RxToken<'a> = StmPhyRxToken<'a> where Self: 'a;
+    type TxToken<'a> = StmPhyTxToken<'a> where Self: 'a;
 
-impl<'a> phy::RxToken for UsbIpPhyRxToken<'a> {
+    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let rxbuf = self.rxbuf.get_mut();
+        let txbuf = self.txbuf.get_mut();
+
+        match rxbuf.busy {
+            BufState::Await => Some((StmPhyRxToken(rxbuf), StmPhyTxToken(&mut txbuf.buf))),
+            _ => None,
+        }
+    }
+
+    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        let txbuf = self.txbuf.get_mut();
+        match txbuf.busy {
+            BufState::Writing => None,
+            _ => Some(StmPhyTxToken(&mut txbuf.buf)),
+        }
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_transmission_unit = MTU;
+        caps.max_burst_size = Some(1);
+        caps.medium = Medium::Ethernet;
+        caps
+    }
+}
+
+pub struct StmPhyRxToken<'a>(&'a mut SyncBuf);
+
+impl<'a> phy::RxToken for StmPhyRxToken<'a> {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
         // TODO: receive packet into buffer
-        let mut buf: [u8; 1534] = [0; 1534];
-        let len = self.0.ncm_getdatagram(&mut buf);
-        debug!("Recieved {} bytes", len);
-        f(&mut buf)
-    }
-}
 
-pub struct UsbIpPhyTxToken<'a>(&'a mut UsbIpIn);
-impl<'a> phy::TxToken for UsbIpPhyTxToken<'a> {
-    fn consume<R, F>(self, len: usize, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        let buf = self.0.ncm_allocdatagram(len).unwrap();
-        let result = f(buf);
-        debug!("tx called {}", len);
-        debug!("{:?}", &buf[..len]);
-        self.0.ncm_setdatagram().unwrap();
+        let result = f(self.0.buf.as_mut_slice());
+        println!("rx called");
+        self.0.busy = BufState::Empty;
         result
     }
 }
 
-//TODO: implment a miliseconds! counter for timestamp
+pub struct StmPhyTxToken<'a>(&'a mut [u8]);
 
-impl Device for UsbIpPhy<'_> {
-    fn transmit<'a>(&'_ mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
-        Some(UsbIpPhyTxToken(&mut self.tx))
+impl<'a> phy::TxToken for StmPhyTxToken<'a> {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let result = f(&mut self.0[..len]);
+        println!("tx called {}", len);
+        // TODO: send packet out
+        result
     }
-    fn receive(
-        &mut self,
-        _timestamp: smoltcp::time::Instant,
-    ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        Some((UsbIpPhyRxToken(&mut self.rx), UsbIpPhyTxToken(&mut self.tx)))
-    }
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut csum = ChecksumCapabilities::default();
-        csum.ipv4 = Checksum::Tx;
-        csum.tcp = Checksum::Tx;
-        csum.udp = Checksum::Tx;
-        csum.icmpv4 = Checksum::Tx;
-
-        let mut cap = DeviceCapabilities::default();
-        cap.medium = Medium::Ip;
-        cap.max_transmission_unit = 1500 - 40;
-        cap.max_burst_size = Some(1); //FIXME: needs to be no bigger than usb buffer?
-        cap.checksum = csum;
-        cap
-    }
-    type RxToken<'a> = UsbIpPhyRxToken<'a> where Self: 'a;
-    type TxToken<'a> = UsbIpPhyTxToken<'a> where Self: 'a;
 }

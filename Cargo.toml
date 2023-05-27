@@ -22,9 +22,10 @@ num_enum = {version = "0.5.11", default-features = false}
 # usb
 usb-device = {git = "https://github.com/rust-embedded-community/usb-device"}
 usbd-serial = "0.1.1"
+ringbuf = {version="0.3.3", default-features = false}
 
 # tcpip
-smoltcp = { version = "0.9.1", default-features = false, features = ["medium-ip","socket-udp","socket-tcp","proto-ipv4","alloc","defmt"] }
+smoltcp = { version = "0.9.1", default-features = false, features = ["medium-ethernet","socket-udp","socket-tcp","proto-ipv4","alloc","defmt"] }
 
 
 

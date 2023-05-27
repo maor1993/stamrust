@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::borrow::BorrowMut;
-
-use cortex_m::interrupt::Mutex;
 //runtime
 use cortex_m_rt::entry;
 use defmt::debug;
@@ -20,6 +17,7 @@ mod cdc_ncm;
 use cdc_ncm::{CDC_SUBCLASS_NCM, USB_CLASS_CDC};
 mod intf;
 mod ncm_netif;
+use ncm_netif::{BufState, SyncBuf};
 mod server;
 use intf::UsbIp;
 use server::TcpServer;
@@ -61,6 +59,7 @@ fn init_heap() {
     unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
 }
 
+#[derive(PartialEq)]
 enum IpBootState {
     Speed,
     Notify,
@@ -128,9 +127,10 @@ fn main() -> ! {
     let mut currheader = NCMTransferHeader::default();
     let mut currndp = NCMDatagramPointerTable::default();
     let mut currcnt = 0;
-    let mut packetbuf = [0u8; NCM_MAX_OUT_SIZE];
     let mut bytes_copied = 0;
-    // let mut tcpserv = TcpServer::init_server(ip.ip_in.borrow_mut(),ip.ip_out.borrow_mut());
+    let mut entrycnt = 0;
+    let mut gotfirstpacket = false;
+    let mut tcpserv = TcpServer::init_server();
     loop {
         if usb_dev.poll(&mut [&mut ip.inner]) {
             match bootstate {
@@ -146,15 +146,14 @@ fn main() -> ! {
                     }
                 }
                 IpBootState::Normal => {
-                    let mut rxbuf = [0u8; EP_DATA_BUF_SIZE];
+                    let mut rxbuf: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
+                    let mut packetbuf = tcpserv.get_rx_buf();
+                    if packetbuf.busy == BufState::Await {
+                        continue;
+                    }
 
                     if let Ok(size) = ip.inner.read_packet(rxbuf.as_mut_slice()) {
                         // debug!("got packet: {:x},size {}", rxbuf[0..size], size);
-
-
-
-
-
                         match rxstate {
                             IpRxState::AwaitHeader => {
                                 currheader = rxbuf[0..size].try_into().unwrap();
@@ -163,23 +162,26 @@ fn main() -> ! {
                                     .try_into()
                                     .unwrap();
                                 debug!("got ndp: {:?}", currndp);
+                                packetbuf.busy = BufState::Writing;
                                 if (currndp.datagrams[0].index as usize) < size {
                                     let diff = size - currndp.datagrams[0].index as usize;
                                     // the message starts in this packet, we can skip the locate state
-                                    packetbuf[0..diff].copy_from_slice(&rxbuf[currndp.datagrams[0].index as usize..size]);
+                                    packetbuf.buf[0..diff].copy_from_slice(
+                                        &rxbuf[currndp.datagrams[0].index as usize..size],
+                                    );
                                     bytes_copied += diff;
                                     // debug!("copied {} bytes",bytes_copied);
                                     rxstate = IpRxState::CollectData;
-                                }else{
+                                } else {
                                     currcnt = currndp.datagrams[0].index as usize - size; // start counting backwards until we reach the datagram
                                     rxstate = IpRxState::LocateDataStart;
-                                }   
+                                }
                             }
                             IpRxState::LocateDataStart => {
                                 if currcnt <= size {
                                     // the start of the datagram is located on this packet, start collecting to buffer
                                     let diff = size - currcnt;
-                                    packetbuf[0..diff].copy_from_slice(&rxbuf[currcnt..size]);
+                                    packetbuf.buf[0..diff].copy_from_slice(&rxbuf[currcnt..size]);
                                     bytes_copied += diff;
                                     rxstate = IpRxState::CollectData;
                                 } else {
@@ -187,17 +189,21 @@ fn main() -> ! {
                                 }
                             }
                             IpRxState::CollectData => {
-                                let bytes_to_copy =(currndp.datagrams[0].length as usize - bytes_copied).min(size); 
-                                packetbuf[bytes_copied..bytes_copied+bytes_to_copy].copy_from_slice(&rxbuf[0..bytes_to_copy]);
+                                let bytes_to_copy =
+                                    (currndp.datagrams[0].length as usize - bytes_copied).min(size);
+                                packetbuf.buf[bytes_copied..bytes_copied + bytes_to_copy]
+                                    .copy_from_slice(&rxbuf[0..bytes_to_copy]);
                                 // debug!("copied {} bytes",bytes_copied);
                                 bytes_copied += bytes_to_copy;
                                 if currndp.datagrams[0].length as usize == bytes_copied {
                                     debug!(
                                         "finished copying message: {:x}",
-                                        packetbuf[0..currndp.datagrams[0].length as usize]
+                                        packetbuf.buf[0..currndp.datagrams[0].length as usize]
                                     );
                                     bytes_copied = 0;
                                     rxstate = IpRxState::AwaitHeader;
+                                    packetbuf.busy = BufState::Await;
+                                    gotfirstpacket = true;
                                 }
                             }
                             IpRxState::Reply => {}
@@ -206,11 +212,9 @@ fn main() -> ! {
                 }
             }
         }
-
-        // let buf = [0u8;1024];
-        // ip.inner.write_packet(&buf).unwrap();
-
-        // tcpserv.eth_task();
+        else if  bootstate==IpBootState::Normal&&gotfirstpacket{
+                tcpserv.eth_task();
+        }
     }
 }
 

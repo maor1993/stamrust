@@ -155,7 +155,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
     fn get_string(&self, index: StringIndex, lang_id: u16) -> Option<&str> {
         match index.into() {
             4 => Some("IP Gateway"),
-            5 => Some("0080E1000000"),
+            5 => Some("0080E1000000"), 
             _ => None,
         }
     }

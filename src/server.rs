@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use core::cell::RefMut;
+use core::cell::{RefCell, RefMut};
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -9,29 +9,29 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::Device;
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
-use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 use usb_device::class_prelude::UsbBus;
 use usb_device::prelude::UsbDevice;
 
 use crate::intf::{UsbIp, UsbIpIn, UsbIpOut};
-use crate::ncm_netif::UsbIpPhy;
+use crate::ncm_netif::{StmPhy, SyncBuf};
 use defmt::println;
 
 pub struct TcpServer<'a> {
-    device: UsbIpPhy<'a>,
+    device: StmPhy,
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
 }
 
 impl<'a> TcpServer<'a> {
-    pub fn init_server(tx:RefMut<'a,UsbIpIn>,rx:RefMut<'a,UsbIpOut>) -> Self
-    {
+    pub fn init_server() -> Self {
         // Create interface
-        let mut device = UsbIpPhy::new(tx, rx);
+        let mut device = StmPhy::new();
         let mut config = Config::new();
         config.random_seed = 0; //FIXME: get a random seed from hardware
-
+        config.hardware_addr =
+            Some(smoltcp::wire::EthernetAddress([0x00, 0x80, 0xE1, 0x00, 0x00, 0x00]).into());
         let mut iface = Interface::new(config, &mut device);
         iface.update_ip_addrs(|ip_addrs| {
             ip_addrs
@@ -78,6 +78,9 @@ impl<'a> TcpServer<'a> {
             println!("tcp:6969 close");
             socket.close();
         }
+    }
+    pub fn get_rx_buf(&mut self) -> RefMut<SyncBuf> {
+        self.device.rxbuf.borrow_mut()
     }
 }
 
