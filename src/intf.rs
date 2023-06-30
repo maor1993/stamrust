@@ -1,5 +1,5 @@
 use crate::cdc_ncm::{
-    CdcNcmClass, NCMDatagram16, NCMDatagramPointerTable, NCMTransferHeader, NTBState,
+    CdcNcmClass,NTBState,
     NCM_MAX_SEGMENT_SIZE, NDP16_SIGNATURE, NTH16_SIGNATURE,
 };
 use alloc::vec::Vec;
@@ -13,6 +13,57 @@ extern crate alloc;
 const PAGE_SIZE: usize = 2048;
 
 pub type NCMResult<T> = core::result::Result<T, NCMError>;
+
+
+#[repr(C)]
+#[derive(Debug, defmt::Format, Clone)]
+pub struct NCMTransferHeader {
+    pub signature: u32,
+    pub headerlen: u16,
+    pub sequence: u16,
+    pub blocklen: u16,
+    pub ndpidex: u16,
+}
+
+impl Default for NCMTransferHeader {
+    fn default() -> Self {
+        NCMTransferHeader {
+            signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
+            headerlen: 0x000c,
+            sequence: 0,
+            blocklen: 0,
+            ndpidex: 0x0010,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, defmt::Format, Clone, Default)]
+pub struct NCMDatagram16 {
+    pub index: u16,
+    pub length: u16,
+}
+
+#[repr(C)]
+#[derive(Debug, defmt::Format, Clone)]
+pub struct NCMDatagramPointerTable {
+    pub signature: u32,
+    pub length: u16,
+    pub nextndpindex: u16,
+    pub datagrams: Vec<NCMDatagram16>,
+}
+
+impl Default for NCMDatagramPointerTable {
+    fn default() -> Self {
+        NCMDatagramPointerTable {
+            signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
+            length: 0,
+            nextndpindex: 0,
+            datagrams: Vec::<NCMDatagram16>::new(),
+        }
+    }
+}
+
 
 /// A USB stack error.
 #[derive(Debug)]
@@ -310,7 +361,7 @@ impl UsbIpOut {
 
 type PacketBuf = [u8; PAGE_SIZE];
 
-trait ToBytes {
+pub trait ToBytes {
     fn conv_to_bytes(&self) -> Vec<u8>;
 }
 
@@ -452,7 +503,7 @@ where
     }
     pub fn send_connection_notificaiton(&mut self) -> usb_device::Result<usize> where {
         //update internal state as connected
-        self.ip_in.borrow_mut().set_connection_state(true);
+        // self.ip_in.borrow_mut().set_connection_state(true);
         let conmsg: [u8; size_of::<CdcConnectionNotifyMsg>()] =
             CdcConnectionNotifyMsg::default().try_into().unwrap();
         self.inner.send_notification(conmsg.as_slice())

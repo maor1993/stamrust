@@ -68,31 +68,6 @@ pub struct CdcNcmClass<'a, B: UsbBus> {
     macaddrstr: StringIndex,
 }
 
-#[repr(C)]
-#[derive(Debug,defmt::Format, Clone, Default)]
-pub struct NCMTransferHeader {
-    pub signature: u32,
-    pub headerlen: u16,
-    pub sequence: u16,
-    pub blocklen: u16,
-    pub ndpidex: u16,
-}
-
-#[repr(C)]
-#[derive(Debug,defmt::Format, Clone, Default)]
-pub struct NCMDatagram16 {
-    pub index: u16,
-    pub length: u16,
-}
-
-#[repr(C)]
-#[derive(Debug,defmt::Format, Clone, Default)]
-pub struct NCMDatagramPointerTable {
-    pub signature: u32,
-    pub length: u16,
-    pub nextndpindex: u16,
-    pub datagrams: Vec<NCMDatagram16>,
-}
 
 #[repr(C, packed)]
 #[derive(Default)]
@@ -152,10 +127,10 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
 }
 
 impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
-    fn get_string(&self, index: StringIndex, lang_id: u16) -> Option<&str> {
+    fn get_string(&self, index: StringIndex, _lang_id: u16) -> Option<&str> {
         match index.into() {
             4 => Some("IP Gateway"),
-            5 => Some("0080E1000000"), 
+            5 => Some("0080E1000000"),
             _ => None,
         }
     }
@@ -329,7 +304,6 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         }
     }
     fn set_alt_setting(&mut self, interface: InterfaceNumber, alternative: u8) -> bool {
-        (interface,alternative) == (self.data_if,1)
-
+        (interface, alternative) == (self.data_if, 1)
     }
 }

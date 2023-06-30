@@ -15,6 +15,7 @@ pub enum BufState {
 
 pub struct SyncBuf {
     pub busy: BufState,
+    pub len: usize,
     pub buf: [u8; MTU],
 }
 
@@ -22,6 +23,7 @@ impl Default for SyncBuf {
     fn default() -> Self {
         Self {
             busy: BufState::Empty,
+            len : 0,
             buf: [0u8; MTU],
         }
     }
@@ -49,7 +51,7 @@ impl phy::Device for StmPhy {
         let txbuf = self.txbuf.get_mut();
 
         match rxbuf.busy {
-            BufState::Await => Some((StmPhyRxToken(rxbuf), StmPhyTxToken(&mut txbuf.buf))),
+            BufState::Await => Some((StmPhyRxToken(rxbuf), StmPhyTxToken(txbuf))),
             _ => None,
         }
     }
@@ -58,7 +60,7 @@ impl phy::Device for StmPhy {
         let txbuf = self.txbuf.get_mut();
         match txbuf.busy {
             BufState::Writing => None,
-            _ => Some(StmPhyTxToken(&mut txbuf.buf)),
+            _ => Some(StmPhyTxToken(txbuf)),
         }
     }
 
@@ -80,22 +82,25 @@ impl<'a> phy::RxToken for StmPhyRxToken<'a> {
     {
         // TODO: receive packet into buffer
 
-        let result = f(self.0.buf.as_mut_slice());
-        println!("rx called");
+        let result = f(&mut self.0.buf[0..self.0.len]);
+        println!("rx called: {:?}",self.0.buf[0..self.0.len]);
         self.0.busy = BufState::Empty;
         result
     }
 }
 
-pub struct StmPhyTxToken<'a>(&'a mut [u8]);
+pub struct StmPhyTxToken<'a>(&'a mut SyncBuf);
 
 impl<'a> phy::TxToken for StmPhyTxToken<'a> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let result = f(&mut self.0[..len]);
+        let result = f(&mut self.0.buf[..len]);
         println!("tx called {}", len);
+        //update buffer with new pending packet
+        self.0.len = len;
+        self.0.busy = BufState::Writing;
         // TODO: send packet out
         result
     }
