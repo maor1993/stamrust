@@ -1,4 +1,4 @@
-use defmt::println;
+use defmt::debug;
 use smoltcp::phy::{self, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 extern crate alloc;
@@ -83,7 +83,7 @@ impl<'a> phy::RxToken for StmPhyRxToken<'a> {
         // TODO: receive packet into buffer
 
         let result = f(&mut self.0.buf[0..self.0.len]);
-        println!("rx called: {:?}",self.0.buf[0..self.0.len]);
+        debug!("rx called: {:#02x}",self.0.buf[0..self.0.len]);
         self.0.busy = BufState::Empty;
         result
     }
@@ -97,7 +97,7 @@ impl<'a> phy::TxToken for StmPhyTxToken<'a> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let result = f(&mut self.0.buf[..len]);
-        println!("tx called {}", len);
+        debug!("tx called {}", len);
         //update buffer with new pending packet
         self.0.len = len;
         self.0.busy = BufState::Writing;

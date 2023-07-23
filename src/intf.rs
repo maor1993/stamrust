@@ -1,18 +1,16 @@
 use crate::cdc_ncm::{
-    CdcNcmClass,NTBState,
-    NCM_MAX_SEGMENT_SIZE, NDP16_SIGNATURE, NTH16_SIGNATURE,
+    CdcNcmClass,NDP16_SIGNATURE, NTH16_SIGNATURE,
 };
 use alloc::vec::Vec;
 use core::array::TryFromSliceError;
-use core::cell::RefCell;
 use core::mem::size_of;
 use defmt::debug;
 use usb_device::bus::UsbBus;
 use usb_device::class_prelude::*;
 extern crate alloc;
-const PAGE_SIZE: usize = 2048;
+// const PAGE_SIZE: usize = 2048;
 
-pub type NCMResult<T> = core::result::Result<T, NCMError>;
+// pub type NCMResult<T> = core::result::Result<T, NCMError>;
 
 
 #[repr(C)]
@@ -69,8 +67,8 @@ impl Default for NCMDatagramPointerTable {
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum NCMError {
-    //attempted to select unexistant page
-    PageError,
+    // 
+    TryFromSliceError,
     //header has created the wrong signature
     InvalidSignature,
     //
@@ -81,6 +79,12 @@ pub enum NCMError {
 
     RXError,
     TXError,
+}
+
+impl From<TryFromSliceError> for NCMError{
+    fn from(_value: TryFromSliceError) -> Self {
+        NCMError::TryFromSliceError
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -173,194 +177,6 @@ impl TryInto<[u8; size_of::<CdcConnectionNotifyMsg>()]> for CdcConnectionNotifyM
     }
 }
 
-pub struct UsbIpIn {
-    is_conn: bool,
-    data: [PacketBuf; 2],
-    max_size: usize,
-    rem_size: usize,
-    index: usize,
-    page: u8,
-    sequence: u16,
-    send_state: NTBState,
-    dgcount: u8,
-    fill_state: NTBState,
-}
-
-impl UsbIpIn {
-    fn ncm_sendntb(&mut self, page: u8) -> Result<&[u8], NCMError> {
-        if page >= 2u8 {
-            return Err(NCMError::PageError);
-        }
-
-        let currdataptr = &self.data[page as usize][0..];
-        let mut datagrams = Vec::<NCMDatagram16>::new();
-        let ptlen = size_of::<NCMDatagramPointerTable>()
-            + (self.dgcount as usize) * size_of::<NCMDatagram16>();
-
-        let nth = NCMTransferHeader {
-            signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
-            headerlen: size_of::<NCMTransferHeader>() as u16,
-            blocklen: (size_of::<NCMTransferHeader>() + self.index + ptlen) as u16,
-            sequence: self.sequence,
-            ndpidex: self.index as u16,
-        };
-        let dploc = self.get_dp_len_idx();
-
-        for i in self.dgcount as usize..0 {
-            datagrams.push(NCMDatagram16 {
-                index: 0,
-                length: u16::from_le_bytes(
-                    currdataptr[dploc + 2 * i..dploc + 2 + 2 * i]
-                        .try_into()
-                        .unwrap(),
-                ),
-            })
-        }
-        // let mut prev_index;
-        datagrams[0].index = size_of::<NCMTransferHeader>() as u16;
-
-        for i in 1..self.dgcount as usize {
-            datagrams[i].index = (datagrams[i - 1].index + datagrams[i - 1].length + 3) & 0xfffc;
-        }
-
-        datagrams.push(NCMDatagram16 {
-            index: 0,
-            length: 0,
-        });
-
-        let pt = NCMDatagramPointerTable {
-            signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
-            length: ptlen as u16,
-            nextndpindex: 0,
-            datagrams,
-        };
-
-        //start copying to data buffer
-        let ndppoint = self.index;
-
-        self.data[page as usize][0..].copy_from_slice(nth.conv_to_bytes().as_slice());
-        self.data[page as usize][ndppoint..].copy_from_slice(pt.conv_to_bytes().as_slice());
-
-        //switch pages
-        self.page = 1 - page;
-        self.dgcount = 0;
-        self.index = size_of::<NCMTransferHeader>();
-        self.rem_size =
-            self.max_size - size_of::<NCMTransferHeader>() - size_of::<NCMDatagramPointerTable>();
-        self.fill_state = NTBState::Empty;
-        self.send_state = NTBState::Transferring;
-
-        self.sequence += 2;
-
-        Ok(&self.data[page as usize])
-    }
-
-    pub fn ncm_setdatagram(&mut self) -> Result<(), NCMError> {
-        if self.fill_state == NTBState::Processing {
-            let page = self.page;
-
-            if self.send_state != NTBState::Empty {
-                self.fill_state = NTBState::Ready;
-            } else {
-                self.ncm_sendntb(page)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn get_dp_len_idx(&self) -> usize {
-        size_of::<PacketBuf>() - (self.dgcount as usize * size_of::<u32>())
-    }
-    fn set_dp_len(&mut self, len: u16) {
-        let dploc = self.get_dp_len_idx();
-        self.data[self.page as usize][dploc..dploc + 2].copy_from_slice(&len.to_le_bytes());
-    }
-
-    pub fn ncm_allocdatagram(&mut self, len: usize) -> Result<&mut [u8], NCMError> {
-        //ensure all criteria has been met before starting
-
-        if (!self.is_conn)
-            || (len >= NCM_MAX_SEGMENT_SIZE)
-            || self.fill_state == NTBState::Processing
-        {
-            Err(NCMError::TXError)
-        } else {
-            // align allocated length to 32 bit boundary
-            let wlen = (len + 3) & 0x0000_fffc;
-            let addlen = wlen + size_of::<NCMDatagram16>();
-
-            //update the in state to processing.
-            self.fill_state = NTBState::Processing;
-            let page = self.page as usize;
-
-            //assuming there is enough room in buffer, push the new data page
-            if addlen <= self.rem_size {
-                self.dgcount += 1;
-                self.set_dp_len(len as u16);
-
-                let dataloc = self.index;
-                self.index += wlen;
-                self.rem_size -= addlen;
-
-                Ok(&mut self.data[page][dataloc..]) //fixme: there is no way to ensure we're not overlapping other messages
-            } else {
-                Err(NCMError::ArrayError)
-            }
-        }
-    }
-
-    pub fn set_connection_state(&mut self, connected: bool) {
-        self.is_conn = connected;
-    }
-}
-
-pub struct UsbIpOut {
-    data: [PacketBuf; 2],
-    pt: Option<NCMDatagramPointerTable>,
-    page: u8,
-    dx: u8,
-    state: [NTBState; 2],
-}
-
-impl UsbIpOut {
-    pub fn updateptloc(&mut self, pt: NCMDatagramPointerTable) {
-        self.pt = Some(pt)
-    }
-
-    pub fn ncm_getdatagram(&self, data: &mut [u8]) -> usize {
-        // let page = self.page as usize;
-        let mut len = 48;
-
-        data[0..48].copy_from_slice(&[
-            0x45, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8,
-            0x45, 0x64, 0xc0, 0xa8, 0x45, 0x01, 0x9f, 0x6e, 0x1b, 0x12, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0xa0, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03,
-            0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-
-        // match self.state[page]{
-        //     NTBState::Ready => self.state[page] = NTBState::Processing,
-        //     NTBState::Processing => {
-        //         if let Some(x) = &mut self.pt{
-        //             if(x.datagram[])
-        //         }
-        //     }
-
-        // }
-
-        // if self.state[page]== NTBState::Ready{
-        //     self.state[page] = NTBState::Processing;
-        // }
-        // else{
-
-        // }
-
-        len
-    }
-}
-
-type PacketBuf = [u8; PAGE_SIZE];
-
 pub trait ToBytes {
     fn conv_to_bytes(&self) -> Vec<u8>;
 }
@@ -395,11 +211,11 @@ impl ToBytes for NCMTransferHeader {
 }
 
 impl TryInto<NCMTransferHeader> for &[u8] {
-    type Error = TryFromSliceError;
+    type Error = NCMError;
     fn try_into(self) -> Result<NCMTransferHeader, Self::Error> {
         let signature = u32::from_le_bytes(self[0..4].try_into()?);
         if signature != u32::from_le_bytes(NTH16_SIGNATURE.try_into()?) {
-            panic!("wrong signature");
+            return Err(NCMError::InvalidSignature)
         } 
 
 
@@ -414,14 +230,14 @@ impl TryInto<NCMTransferHeader> for &[u8] {
 }
 
 impl TryInto<NCMDatagramPointerTable> for &[u8] {
-    type Error = TryFromSliceError;
+    type Error = NCMError;
     fn try_into(self) -> Result<NCMDatagramPointerTable, Self::Error> {
         let signature = u32::from_le_bytes(self[0..4].try_into()?);
         let length = u16::from_le_bytes(self[4..6].try_into()?);
         let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
 
         if signature != u32::from_le_bytes(NDP16_SIGNATURE.try_into()?) {
-            panic!("wrong signature"); //FIXME: replace panic with custom error
+            return Err(NCMError::InvalidSignature)
         }
 
         let datagrams = self[8..(length as usize)]
@@ -444,43 +260,11 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
     }
 }
 
-impl Default for UsbIpOut {
-    fn default() -> Self {
-        UsbIpOut {
-            data: [[0; PAGE_SIZE], [0; PAGE_SIZE]],
-            pt: None,
-            page: 0,
-            dx: 0,
-            state: [NTBState::default(), NTBState::default()],
-        }
-    }
-}
-impl Default for UsbIpIn {
-    fn default() -> Self {
-        UsbIpIn {
-            is_conn: false,
-            data: [[0; PAGE_SIZE], [0; PAGE_SIZE]],
-            max_size: PAGE_SIZE,
-            rem_size: PAGE_SIZE
-                - size_of::<NCMTransferHeader>()
-                - size_of::<NCMDatagramPointerTable>(),
-            index: size_of::<NCMTransferHeader>(),
-            page: 0,
-            dgcount: 0,
-            sequence: 0,
-            send_state: NTBState::Ready,
-            fill_state: NTBState::Empty,
-        }
-    }
-}
-
 pub struct UsbIp<'a, B>
 where
     B: UsbBus,
 {
     pub inner: CdcNcmClass<'a, B>,
-    pub ip_in: RefCell<UsbIpIn>,
-    pub ip_out: RefCell<UsbIpOut>,
 }
 
 impl<B> UsbIp<'_, B>
@@ -491,8 +275,6 @@ where
     pub fn new(alloc: &'_ UsbBusAllocator<B>) -> UsbIp<'_, B> {
         UsbIp {
             inner: CdcNcmClass::new(alloc),
-            ip_in: RefCell::new(UsbIpIn::default()),
-            ip_out: RefCell::new(UsbIpOut::default()),
         }
     }
 
@@ -509,7 +291,7 @@ where
         self.inner.send_notification(conmsg.as_slice())
     }
 
-    pub fn ncm_writeall(&mut self) {
+    pub fn _ncm_writeall(&mut self) {
         //check if there are is any data in buf
     }
 

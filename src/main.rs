@@ -3,7 +3,7 @@
 
 //runtime
 use cortex_m_rt::entry;
-use defmt::debug;
+use defmt::{debug, info};
 use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _;
@@ -161,7 +161,8 @@ fn main() -> ! {
                     
                     if let IpTxState::Write = txstate {
                         // we can only send chunks of 64 bytes, so we will incrementally walk the buffer
-                        let msg = &usbtxbuf[txtransactioncnt..txtransactioncnt + EP_DATA_BUF_SIZE];
+                        let bytestocopy = (usbmsgtotlen-txtransactioncnt).min(EP_DATA_BUF_SIZE);
+                        let msg = &usbtxbuf[txtransactioncnt..txtransactioncnt + bytestocopy];
 
                         if let Ok(size) = ip.inner.write_packet(msg) {
                             debug!("sent {} bytes",size);
@@ -192,7 +193,11 @@ fn main() -> ! {
                                 if size < core::mem::size_of::<NCMTransferHeader>(){
                                     continue;
                                 }
-                                currheader = usbbuf[0..size].try_into().unwrap();
+                                
+                                currheader = match usbbuf[0..size].try_into().ok(){
+                                    Some(x)=> x,
+                                    None => continue
+                                };
                                 // debug!("got message: {:?}", currheader);
                                 currndp = usbbuf[(currheader.ndpidex as usize)..size]
                                     .try_into()
@@ -252,15 +257,21 @@ fn main() -> ! {
                                             index: 0x0020,
                                             length: txbuf.len as u16,
                                         });
+                                        usbmsgtotlen = 0x0020 + txbuf.len;
+                                        txheader.blocklen = usbmsgtotlen as u16;
+                                        txdatagram.length = 0x0010; 
+
                                         let headervec = txheader.conv_to_bytes();
                                         let datagramvec = txdatagram.conv_to_bytes();
 
-                                        usbtxbuf[0..].copy_from_slice(headervec.as_slice());
-                                        usbtxbuf[0x0010..].copy_from_slice(datagramvec.as_slice());
+                                        usbtxbuf[0x0000..0x000C].copy_from_slice(headervec.as_slice());
+                                        usbtxbuf[0x0010..0x001C].copy_from_slice(datagramvec.as_slice());
                                         //TODO: this is only correct for 1 datagram
-                                        usbtxbuf[0x0020..]
+                                        usbtxbuf[0x0020..0x0020+txbuf.len]
                                             .copy_from_slice(txbuf.buf[0..txbuf.len].as_ref());
-                                        usbmsgtotlen = 0x0020 + txbuf.len;
+                                        
+
+                                        info!("sending the following stream {:#02x}",usbtxbuf[0..usbmsgtotlen]);
                                         txstate = IpTxState::Write;
                                         txbuf.busy = BufState::Empty;
                                         rxstate = IpRxState::AwaitHeader;
