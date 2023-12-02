@@ -8,6 +8,7 @@ use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _;
 // hal
+use stm32l4xx_hal::gpio::{Pin,Output,PushPull};
 use stm32l4xx_hal::usb::{Peripheral, UsbBus};
 use stm32l4xx_hal::{prelude::*, stm32};
 use usb_device::prelude::*;
@@ -24,6 +25,55 @@ use server::TcpServer;
 
 use crate::cdc_ncm::{EP_DATA_BUF_SIZE, NCM_MAX_OUT_SIZE};
 use crate::intf::{NCMDatagram16, NCMDatagramPointerTable, NCMTransferHeader, ToBytes};
+
+
+type LedPin = Pin<Output<PushPull>,stm32l4xx_hal::gpio::H8,'A',9>;
+
+struct ProjectPeriphs{
+    led : LedPin,
+    usb : Peripheral,
+}
+
+impl ProjectPeriphs{
+    fn new() -> Self{
+        
+        let dp = stm32::Peripherals::take().unwrap();
+
+        let mut flash = dp.FLASH.constrain();
+        let mut rcc = dp.RCC.constrain();
+        let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
+    
+        let _clocks = rcc
+            .cfgr
+            .hsi48(true)
+            .sysclk(80.MHz())
+            .freeze(&mut flash.acr, &mut pwr);
+    
+
+
+        let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
+        let mut led = gpioa
+            .pa9
+            .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
+        led.set_low(); // Turn off
+    
+        let usb = Peripheral {
+            usb:dp.USB,
+            pin_dm: gpioa
+                .pa11
+                .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
+            pin_dp: gpioa
+                .pa12
+                .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
+        };
+    
+        ProjectPeriphs { led, usb }
+
+    }
+}
+
+
+
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -77,43 +127,18 @@ enum IpTxState {
     Write,
 }
 
+
 #[entry]
 fn main() -> ! {
     init_heap();
-    let dp = stm32::Peripherals::take().unwrap();
-
-    let mut flash = dp.FLASH.constrain();
-    let mut rcc = dp.RCC.constrain();
-    let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
-
-    let _clocks = rcc
-        .cfgr
-        .hsi48(true)
-        .sysclk(80.MHz())
-        .freeze(&mut flash.acr, &mut pwr);
 
     enable_crs();
 
     // disable Vddusb power isolation
     enable_usb_pwr();
+    let mut periphs = ProjectPeriphs::new();
 
-    // Configure the on-board LED (LD3, green)
-    let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
-    let mut led = gpioa
-        .pa9
-        .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
-    led.set_low(); // Turn off
-
-    let usb = Peripheral {
-        usb: dp.USB,
-        pin_dm: gpioa
-            .pa11
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
-        pin_dp: gpioa
-            .pa12
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
-    };
-    let usb_bus = UsbBus::new(usb);
+    let usb_bus = UsbBus::new(periphs.usb);
 
     let mut ip = UsbIp::new(&usb_bus);
 
@@ -141,6 +166,7 @@ fn main() -> ! {
     let mut usbtxbuf: [u8; 2048] = [0u8; 2048];
     let mut usbmsgtotlen = 0;
     loop {
+        periphs.led.toggle();
         if usb_dev.poll(&mut [&mut ip.inner]) {
             match bootstate {
                 IpBootState::Speed => {
@@ -157,15 +183,14 @@ fn main() -> ! {
                 IpBootState::Normal => {
                     let mut usbbuf: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
                     let (mut rxbuf, mut txbuf) = tcpserv.get_bufs();
-                    
-                    
+
                     if let IpTxState::Write = txstate {
                         // we can only send chunks of 64 bytes, so we will incrementally walk the buffer
-                        let bytestocopy = (usbmsgtotlen-txtransactioncnt).min(EP_DATA_BUF_SIZE);
+                        let bytestocopy = (usbmsgtotlen - txtransactioncnt).min(EP_DATA_BUF_SIZE);
                         let msg = &usbtxbuf[txtransactioncnt..txtransactioncnt + bytestocopy];
 
                         if let Ok(size) = ip.inner.write_packet(msg) {
-                            debug!("sent {} bytes",size);
+                            debug!("sent {} bytes", size);
                             //part of message sucesfully sent.
                             //increment the read pointer by size.
                             if txtransactioncnt >= usbmsgtotlen {
@@ -180,8 +205,7 @@ fn main() -> ! {
                             }
                         }
                     }
-                    
-                    
+
                     if rxbuf.busy == BufState::Await {
                         continue;
                     }
@@ -190,13 +214,13 @@ fn main() -> ! {
                         // debug!("got packet: {:x},size {}", rxbuf[0..size], size);
                         match rxstate {
                             IpRxState::AwaitHeader => {
-                                if size < core::mem::size_of::<NCMTransferHeader>(){
+                                if size < core::mem::size_of::<NCMTransferHeader>() {
                                     continue;
                                 }
-                                
-                                currheader = match usbbuf[0..size].try_into().ok(){
-                                    Some(x)=> x,
-                                    None => continue
+
+                                currheader = match usbbuf[0..size].try_into().ok() {
+                                    Some(x) => x,
+                                    None => continue,
                                 };
                                 // debug!("got message: {:?}", currheader);
                                 currndp = usbbuf[(currheader.ndpidex as usize)..size]
@@ -259,33 +283,31 @@ fn main() -> ! {
                                         });
                                         usbmsgtotlen = 0x0020 + txbuf.len;
                                         txheader.blocklen = usbmsgtotlen as u16;
-                                        txdatagram.length = 0x0010; 
+                                        txdatagram.length = 0x0010;
 
                                         let headervec = txheader.conv_to_bytes();
                                         let datagramvec = txdatagram.conv_to_bytes();
 
-                                        usbtxbuf[0x0000..0x000C].copy_from_slice(headervec.as_slice());
-                                        usbtxbuf[0x0010..0x001C].copy_from_slice(datagramvec.as_slice());
+                                        usbtxbuf[0x0000..0x000C]
+                                            .copy_from_slice(headervec.as_slice());
+                                        usbtxbuf[0x0010..0x001C]
+                                            .copy_from_slice(datagramvec.as_slice());
                                         //TODO: this is only correct for 1 datagram
-                                        usbtxbuf[0x0020..0x0020+txbuf.len]
+                                        usbtxbuf[0x0020..0x0020 + txbuf.len]
                                             .copy_from_slice(txbuf.buf[0..txbuf.len].as_ref());
-                                        
 
-                                        info!("sending the following stream {:#02x}",usbtxbuf[0..usbmsgtotlen]);
+                                        // info!("sending the following stream {:#02x}",usbtxbuf[0..usbmsgtotlen]);
                                         txstate = IpTxState::Write;
                                         txbuf.busy = BufState::Empty;
                                         rxstate = IpRxState::AwaitHeader;
                                     }
-                                }
-                                else{
+                                } else {
                                     //missed this round.
                                     rxstate = IpRxState::AwaitHeader;
                                 }
                             }
                         }
                     }
-
-
                 }
             }
         } else if bootstate == IpBootState::Normal && gotfirstpacket {

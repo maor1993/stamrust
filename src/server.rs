@@ -15,12 +15,15 @@ use smoltcp::wire::{Icmpv4Repr,Icmpv4Packet};
 use crate::ncm_netif::{StmPhy, SyncBuf};
 use defmt::println;
 
+const TESTWEBSITE: &[u8] = include_bytes!("../static/index.html");
+
 pub struct TcpServer<'a> {
     device: StmPhy,
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
     icmp_handle: SocketHandle,
+    curr_data_idx : usize,
 }
 
 impl<'a> TcpServer<'a> {
@@ -66,6 +69,7 @@ impl<'a> TcpServer<'a> {
             sockets,
             tcp1_handle,
             icmp_handle,
+            curr_data_idx:0
         }
     }
     pub fn eth_task(&mut self) {
@@ -96,15 +100,15 @@ impl<'a> TcpServer<'a> {
         
 
 
-
         let tcp_socket = self.sockets.get_mut::<tcp::Socket>(self.tcp1_handle);
         if !tcp_socket.is_open() {
             tcp_socket.listen(6969).unwrap();
+            self.curr_data_idx = 0;
         }
         if tcp_socket.can_send() {
             println!("tcp:6969 send greeting");
-            tcp_socket
-                .send_slice(b"my name is jeff")
+            self.curr_data_idx += tcp_socket
+                .send_slice(&TESTWEBSITE[self.curr_data_idx..])
                 .expect("failed to send message");
             println!("tcp:6969 close");
             tcp_socket.close();
