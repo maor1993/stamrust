@@ -20,7 +20,7 @@ pub struct NCMTransferHeader {
     pub headerlen: u16,
     pub sequence: u16,
     pub blocklen: u16,
-    pub ndpidex: u16,
+    pub ndpindex: u16,
 }
 
 impl Default for NCMTransferHeader {
@@ -30,7 +30,7 @@ impl Default for NCMTransferHeader {
             headerlen: 0x000c,
             sequence: 0,
             blocklen: 0,
-            ndpidex: 0x0010,
+            ndpindex: 0x0010,
         }
     }
 }
@@ -204,7 +204,7 @@ impl ToBytes for NCMTransferHeader {
         bytes.extend_from_slice(&self.headerlen.to_le_bytes());
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
         bytes.extend_from_slice(&self.blocklen.to_le_bytes());
-        bytes.extend_from_slice(&self.ndpidex.to_le_bytes());
+        bytes.extend_from_slice(&self.ndpindex.to_le_bytes());
 
         bytes
     }
@@ -224,7 +224,7 @@ impl TryInto<NCMTransferHeader> for &[u8] {
             headerlen: u16::from_le_bytes(self[4..6].try_into()?),
             sequence: u16::from_le_bytes(self[6..8].try_into()?),
             blocklen: u16::from_le_bytes(self[8..10].try_into()?),
-            ndpidex: u16::from_le_bytes(self[10..12].try_into()?),
+            ndpindex: u16::from_le_bytes(self[10..12].try_into()?),
         })
     }
 }

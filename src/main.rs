@@ -59,13 +59,13 @@ fn SysTick(){
 
 
 
-type LedPin = Pin<Output<PushPull>, stm32l4xx_hal::gpio::H8, 'A', 8>;
+// type LedPin = Pin<Output<PushPull>, stm32l4xx_hal::gpio::H8, 'A', 8>;
 type Rgb = (Pwm<TIM1, C1>, Pwm<TIM1, C2>, Pwm<TIM1, C3>);
 
 enum  RgbLed{
-    RED,
-    GREEN,
-    BLUE,
+    Red,
+    Green,
+    Blue,
 }
 
 
@@ -79,9 +79,9 @@ impl RgbControl{
     fn set_duty(&mut self, led:RgbLed,duty:u16){
         let duty_actual =self.rgb.0.get_max_duty()*(100-duty)/100;
         match led {
-            RgbLed::RED=>self.rgb.0.set_duty(duty_actual),
-            RgbLed::GREEN=>self.rgb.1.set_duty(duty_actual),
-            RgbLed::BLUE=>self.rgb.2.set_duty(duty_actual),
+            RgbLed::Red=>self.rgb.0.set_duty(duty_actual),
+            RgbLed::Green=>self.rgb.1.set_duty(duty_actual),
+            RgbLed::Blue=>self.rgb.2.set_duty(duty_actual),
         }
     }
 
@@ -95,8 +95,8 @@ impl RgbControl{
 
 
 struct ProjectPeriphs {
-    sanity_led : LedPin,
-    // rgb: RgbControl,
+    // sanity_led : LedPin,
+    rgb: RgbControl,
     usb: Peripheral,
     rng: Rng,
     delay: Delay,
@@ -121,9 +121,9 @@ impl ProjectPeriphs {
         arm.SYST.set_reload(_clocks.sysclk().to_kHz()-1);
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
-        // let c1 = gpioa
-        //     .pa8
-        //     .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let c1 = gpioa
+            .pa8
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
         let c2 = gpioa
             .pa9
             .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
@@ -133,8 +133,8 @@ impl ProjectPeriphs {
 
         let rgb = dp
             .TIM1
-            .pwm((c2, c3), 1.MHz(), _clocks, &mut rcc.apb2);
-        // let rgbcon = RgbControl::new(rgb);
+            .pwm((c1,c2, c3), 1.MHz(), _clocks, &mut rcc.apb2);
+        let rgbcon = RgbControl::new(rgb);
         let usb = Peripheral {
             usb: dp.USB,
             pin_dm: gpioa
@@ -147,10 +147,10 @@ impl ProjectPeriphs {
         let rng = dp.RNG.enable(&mut rcc.ahb2,  _clocks);
 
         ProjectPeriphs { 
-            sanity_led: gpioa.pa8.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper),
+            // sanity_led: gpioa.pa8.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper),
             delay: Delay::new(arm.SYST,_clocks),
             usb, 
-            // rgb:rgbcon,
+            rgb:rgbcon,
             rng }
     }
 
@@ -209,15 +209,14 @@ fn main() -> ! {
     info!("starting server...");
     let mut tcpserv = TcpServer::init_server(periphs.rng.get_random_data());
     let mut usbip = UsbIpManager::new(ip, usb_dev);
-    // periphs.rgb.active_all_pwms();
-    // periphs.rgb.set_duty(RgbLed::RED, 20);
-    // periphs.rgb.set_duty(RgbLed::GREEN, 0);
-    // periphs.rgb.set_duty(RgbLed::BLUE, 0);
+    periphs.rgb.active_all_pwms();
+    periphs.rgb.set_duty(RgbLed::Red, 20);
+    periphs.rgb.set_duty(RgbLed::Green, 0);
+    periphs.rgb.set_duty(RgbLed::Blue, 0);
     let mut perfcounter  =0;
     let mut lastlooptime =0;
     loop {
         let looptime = get_counter();
-        periphs.sanity_led.toggle();
         usbip.run_loop(tcpserv.get_bufs());
         tcpserv.eth_task(looptime);
         lastlooptime =finalize_perfcounter(&mut perfcounter,looptime,lastlooptime);

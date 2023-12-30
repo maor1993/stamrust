@@ -72,60 +72,48 @@ impl<'a> TcpServer<'a> {
             curr_data_idx: 0,
         }
     }
+    fn handle_web_requests(sock: &mut tcp::Socket<'_>,mut last_tx_idx:usize ) -> usize{
+        if !sock.is_open() {
+            sock.listen(6969).unwrap();
+            
+        }
+
+        if  sock.state() == State::CloseWait {
+            last_tx_idx = 0;
+            sock.close()
+        }
+
+
+        if sock.can_send() && last_tx_idx < TESTWEBSITE.len() {
+            last_tx_idx += sock
+                .send_slice(&TESTWEBSITE[last_tx_idx..])
+                .expect("failed to send message");
+        }
+
+        if sock.can_recv(){
+            let mut slice = [0;256];
+            let bytecnt = sock.recv_slice(&mut slice).expect("failed to receive");
+            info!("recv bytes: {}",slice[0..bytecnt]);
+        }
+        last_tx_idx
+        
+    }
+
+
     pub fn eth_task(&mut self, currtime: u32) {
         let mut send_at = Instant::from_millis(currtime);
         let ident: u16 = 0x22b;
         let timestamp = Instant::from_millis(currtime);
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);
-        // tcp:6969: respond "hello"
-
-        let timestamp = 0;
-        let icmp_socket = self.sockets.get_mut::<icmp::Socket>(self.icmp_handle);
-        if !icmp_socket.is_open() {
-            icmp_socket.bind(icmp::Endpoint::Ident(ident)).unwrap();
-            send_at = Instant::from_millis(currtime);
-        }
-
-        if icmp_socket.can_recv() {
-            let (payload, _) = icmp_socket.recv().unwrap();
-            let icmp_packet = Icmpv4Packet::new_checked(&payload).unwrap();
-            let icmp_repr =
-                Icmpv4Repr::parse(&icmp_packet, &self.device.capabilities().checksum).unwrap();
-            debug!("Got icmp packet {:?}", icmp_packet);
-        }
 
         let tcp_socket = self.sockets.get_mut::<tcp::Socket>(self.tcp1_handle);
         
+        self.curr_data_idx = Self::handle_web_requests(tcp_socket,self.curr_data_idx);
         
-        
-        if !tcp_socket.is_open() {
-            tcp_socket.listen(6969).unwrap();
-            
-        }
 
-        if  tcp_socket.state() == State::CloseWait {
-            self.curr_data_idx = 0;
-            tcp_socket.close()
-        }
-
-
-        if tcp_socket.can_send() && self.curr_data_idx < TESTWEBSITE.len() {
-            self.curr_data_idx += tcp_socket
-                .send_slice(&TESTWEBSITE[self.curr_data_idx..])
-                .expect("failed to send message");
-        }
-
-        if tcp_socket.can_recv(){
-            let mut slice = [0;256];
-            let bytecnt = tcp_socket.recv_slice(&mut slice).expect("failed to receive");
-            info!("recv bytes: {}",slice[0..bytecnt]);
-        }
         
     
-    }
-    pub fn get_rx_buf(&mut self) -> RefMut<SyncBuf> {
-        self.device.rxbuf.borrow_mut()
     }
     pub fn get_bufs(&mut self) -> (RefMut<SyncBuf>, RefMut<SyncBuf>) {
         (

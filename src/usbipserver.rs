@@ -17,6 +17,7 @@ enum IpBootState {
 
 enum IpRxState {
     AwaitHeader,
+    AwaitNDP,
     LocateDataStart,
     CollectData,
     Reply,
@@ -79,6 +80,27 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             usbmsgtotlen: 0,
         }
     }
+    pub fn process_ndp(&mut self,usbbuf: &[u8],size:usize,mut rxbuf:RefMut<'_,SyncBuf>){
+        self.currndp = usbbuf[(self.currheader.ndpindex as usize)..size]
+        .try_into()
+        .unwrap();
+    // debug!("got ndp: {:?}", currndp);
+    rxbuf.busy = BufState::Writing;
+    if (self.currndp.datagrams[0].index as usize) < size {
+        let diff = size - self.currndp.datagrams[0].index as usize;
+        // the message starts in this packet, we can skip the locate state
+        rxbuf.buf[0..diff].copy_from_slice(
+            &usbbuf[self.currndp.datagrams[0].index as usize..size],
+        );
+        self.bytes_copied += diff;
+        // debug!("copied {} bytes",bytes_copied);
+        self.rxstate = IpRxState::CollectData;
+    } else {
+        self.currcnt = self.currndp.datagrams[0].index as usize - size; // start counting backwards until we reach the datagram
+        self.rxstate = IpRxState::LocateDataStart;
+    }
+    }
+
     pub fn handle_data(&mut self, buffers: (RefMut<SyncBuf>, RefMut<SyncBuf>)) {
         let mut usbbuf: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
         let (mut rxbuf, mut txbuf) = buffers;
@@ -121,26 +143,31 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                         Some(x) => x,
                         None => return,
                     };
-                    // debug!("got message: {:?}", currheader);
-                    self.currndp = usbbuf[(self.currheader.ndpidex as usize)..size]
-                        .try_into()
-                        .unwrap();
-                    // debug!("got ndp: {:?}", currndp);
-                    rxbuf.busy = BufState::Writing;
-                    if (self.currndp.datagrams[0].index as usize) < size {
-                        let diff = size - self.currndp.datagrams[0].index as usize;
-                        // the message starts in this packet, we can skip the locate state
-                        rxbuf.buf[0..diff].copy_from_slice(
-                            &usbbuf[self.currndp.datagrams[0].index as usize..size],
-                        );
-                        self.bytes_copied += diff;
-                        // debug!("copied {} bytes",bytes_copied);
-                        self.rxstate = IpRxState::CollectData;
-                    } else {
-                        self.currcnt = self.currndp.datagrams[0].index as usize - size; // start counting backwards until we reach the datagram
+                    //there might be a big gap from the header and the ndp, if so, await until we reach the NDP location
+                    if self.currheader.ndpindex as usize >= size{
+                        self.currheader.ndpindex -= size as u16;
+                        self.rxstate = IpRxState::AwaitNDP;
+                    }
+                    else{
+                        self.process_ndp(&usbbuf, size, rxbuf);
                         self.rxstate = IpRxState::LocateDataStart;
                     }
+
+                   
                 }
+                IpRxState::AwaitNDP => {  
+                   if self.currheader.ndpindex < size as u16{
+                        // the NDP is now in the buffer, send it to process
+                        self.process_ndp(&usbbuf, size, rxbuf);
+                        self.rxstate = IpRxState::LocateDataStart;
+                   }
+                   else{
+                        self.currheader.ndpindex -= size as u16;
+                   }
+                }
+
+
+                
                 IpRxState::LocateDataStart => {
                     if self.currcnt <= size {
                         // the start of the datagram is located on this packet, start collecting to buffer
