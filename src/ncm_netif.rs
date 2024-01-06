@@ -27,7 +27,9 @@ impl Default for SyncBuf {
             buf: [0u8; MTU],
         }
     }
+
 }
+//TODO: convert syncbuf to a concurrent queue so we can handle multiple packets
 pub struct StmPhy {
     pub rxbuf: RefCell<SyncBuf>,
     pub txbuf: RefCell<SyncBuf>,
@@ -82,7 +84,7 @@ impl<'a> phy::RxToken for StmPhyRxToken<'a> {
     {
         // TODO: receive packet into buffer
 
-        let result = f(&mut self.0.buf[0..self.0.len]);
+        let result: R = f(&mut self.0.buf[0..self.0.len]);
         debug!("rx called: {:#02x}",self.0.buf[0..self.0.len]);
         self.0.busy = BufState::Empty;
         result
@@ -101,7 +103,6 @@ impl<'a> phy::TxToken for StmPhyTxToken<'a> {
         //update buffer with new pending packet
         self.0.len = len;
         self.0.busy = BufState::Writing;
-        // TODO: send packet out
         result
     }
 }

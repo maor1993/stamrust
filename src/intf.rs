@@ -233,21 +233,23 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
     type Error = NCMError;
     fn try_into(self) -> Result<NCMDatagramPointerTable, Self::Error> {
         let signature = u32::from_le_bytes(self[0..4].try_into()?);
-        let length = u16::from_le_bytes(self[4..6].try_into()?);
-        let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
-
+        
         if signature != u32::from_le_bytes(NDP16_SIGNATURE.try_into()?) {
             return Err(NCMError::InvalidSignature)
         }
+        
+        let length = u16::from_le_bytes(self[4..6].try_into()?);
+        let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
 
         let datagrams = self[8..(length as usize)]
             .to_vec()
-            .windows(4)
-            .map(|win| NCMDatagram16 {
+            .chunks(4)
+            .map(|win| 
+                NCMDatagram16 {
                 index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
                 length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
             })
-            .collect::<Vec<NCMDatagram16>>();
+            .filter(|x| x.length != 0).collect::<Vec<NCMDatagram16>>();
 
 
 
