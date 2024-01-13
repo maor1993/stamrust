@@ -1,45 +1,25 @@
-use defmt::debug;
+use defmt::{debug, warn, info};
 use smoltcp::phy::{self, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
+use smoltcp::wire::IPV4_MIN_MTU;
 extern crate alloc;
-use core::cell::RefCell;
+use concurrent_queue::ConcurrentQueue;
+pub const MTU: usize = IPV4_MIN_MTU;
+const MAX_QUEUE_SIZE: usize = 2;
 
-const MTU: usize = 1536;
+pub type Ethmsg = (usize,[u8;MTU]);
+pub type EthRingBuffers<'a> = (&'a mut ConcurrentQueue<Ethmsg>,&'a mut ConcurrentQueue<Ethmsg>);
 
-#[derive(PartialEq)]
-pub enum BufState {
-    Empty,
-    Writing,
-    Await,
-}
-
-pub struct SyncBuf {
-    pub busy: BufState,
-    pub len: usize,
-    pub buf: [u8; MTU],
-}
-
-impl Default for SyncBuf {
-    fn default() -> Self {
-        Self {
-            busy: BufState::Empty,
-            len : 0,
-            buf: [0u8; MTU],
-        }
-    }
-
-}
-//TODO: convert syncbuf to a concurrent queue so we can handle multiple packets
 pub struct StmPhy {
-    pub rxbuf: RefCell<SyncBuf>,
-    pub txbuf: RefCell<SyncBuf>,
+    pub rxq: ConcurrentQueue::<Ethmsg>,
+    pub txq: ConcurrentQueue::<Ethmsg>,
 }
 
 impl StmPhy {
     pub fn new() -> StmPhy {
         StmPhy {
-            rxbuf: RefCell::<SyncBuf>::new(SyncBuf::default()),
-            txbuf: RefCell::<SyncBuf>::new(SyncBuf::default()),
+            rxq: ConcurrentQueue::<Ethmsg>::bounded(MAX_QUEUE_SIZE),
+            txq: ConcurrentQueue::<Ethmsg>::bounded(MAX_QUEUE_SIZE),
         }
     }
 }
@@ -49,21 +29,18 @@ impl phy::Device for StmPhy {
     type TxToken<'a> = StmPhyTxToken<'a> where Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let rxbuf = self.rxbuf.get_mut();
-        let txbuf = self.txbuf.get_mut();
-
-        match rxbuf.busy {
-            BufState::Await => Some((StmPhyRxToken(rxbuf), StmPhyTxToken(txbuf))),
-            _ => None,
+        if !self.rxq.is_empty(){
+           return Some((StmPhyRxToken(&mut self.rxq), StmPhyTxToken(&mut self.txq)))
         }
+        None
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        let txbuf = self.txbuf.get_mut();
-        match txbuf.busy {
-            BufState::Writing => None,
-            _ => Some(StmPhyTxToken(txbuf)),
+        // let txq = self.txq;
+        if !self.txq.is_full(){
+            return Some(StmPhyTxToken(&mut self.txq));
         }
+        None
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -75,34 +52,36 @@ impl phy::Device for StmPhy {
     }
 }
 
-pub struct StmPhyRxToken<'a>(&'a mut SyncBuf);
+pub struct StmPhyRxToken<'a>(&'a mut ConcurrentQueue<Ethmsg>);
 
 impl<'a> phy::RxToken for StmPhyRxToken<'a> {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // TODO: receive packet into buffer
-
-        let result: R = f(&mut self.0.buf[0..self.0.len]);
-        debug!("rx called: {:#02x}",self.0.buf[0..self.0.len]);
-        self.0.busy = BufState::Empty;
-        result
+        if let Ok(mut x) = self.0.pop(){
+            let result: R = f(&mut x.1);
+            result
+        }
+        else{
+            panic!("RX token called but queue was empty");
+        }
+        
+       
     }
 }
 
-pub struct StmPhyTxToken<'a>(&'a mut SyncBuf);
+pub struct StmPhyTxToken<'a>(&'a mut ConcurrentQueue<Ethmsg>);
 
 impl<'a> phy::TxToken for StmPhyTxToken<'a> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let result = f(&mut self.0.buf[..len]);
-        debug!("tx called {}", len);
+        let mut output = [0u8;MTU];
+        let result = f(&mut output);
+        self.0.push((len,output)).unwrap();
         //update buffer with new pending packet
-        self.0.len = len;
-        self.0.busy = BufState::Writing;
         result
     }
 }

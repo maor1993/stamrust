@@ -2,16 +2,20 @@ use defmt::{debug, info, warn};
 use usb_device::class_prelude::UsbBus;
 use usb_device::device::UsbDevice;
 
-use crate::ncm_netif::{BufState, SyncBuf};
-use core::cell::RefMut;
+use crate::ncm_netif::{EthRingBuffers, MTU};
 
 use crate::cdc_ncm::EP_DATA_BUF_SIZE;
-use crate::cdc_ncm::{NCM_MAX_IN_SIZE,NCM_MAX_OUT_SIZE};
+use crate::cdc_ncm::{NCM_MAX_IN_SIZE, NCM_MAX_OUT_SIZE};
 use crate::intf::{NCMDatagram16, NCMDatagramPointerTable, NCMTransferHeader, ToBytes, UsbIp};
 
-use concurrent_queue::ConcurrentQueue;
+use concurrent_queue::{ConcurrentQueue, PushError};
 
 pub type Usbtransaciton = [u8; EP_DATA_BUF_SIZE];
+
+pub type UsbRingBuffers<'a> = (
+    &'a mut ConcurrentQueue<Usbtransaciton>,
+    &'a mut ConcurrentQueue<Usbtransaciton>,
+);
 
 #[derive(PartialEq)]
 enum UsbIpBootState {
@@ -25,12 +29,11 @@ enum IpRxState {
     CopyEntireMsg,
     ProcessNDP,
     CopyToEthBuf,
-    Reply,
 }
 
 enum IpTxState {
-    Copy,
-    Write,
+    Ready,
+    Sending,
 }
 
 pub struct UsbIpManager<'a, B: UsbBus> {
@@ -59,7 +62,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             usb_dev,
             bootstate: UsbIpBootState::Speed,
             rxstate: IpRxState::AwaitHeader,
-            txstate: IpTxState::Copy,
+            txstate: IpTxState::Ready,
             currheader: NCMTransferHeader::default(),
             currndp: NCMDatagramPointerTable::default(),
             currcnt: 0,
@@ -73,7 +76,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             msghandled: true,
         }
     }
-    pub fn process_ndp(&mut self){
+    pub fn process_ndp(&mut self) {
         self.currndp = self.ncmmsgrxbuf[(self.currheader.ndpindex as usize)..]
             .try_into()
             .unwrap();
@@ -107,15 +110,14 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                     self.msgtxbuf[0..]
                 );
                 self.msghandled = true;
-            } 
+            }
         }
     }
 
     pub fn run_loop(
         &mut self,
-        buffers: (RefMut<SyncBuf>, RefMut<SyncBuf>),
-        usbtxring: &mut ConcurrentQueue<Usbtransaciton>,
-        usbrxring: &mut ConcurrentQueue<Usbtransaciton>,
+        ethring: EthRingBuffers,
+        usbring: UsbRingBuffers,
     ) {
         if self.usb_dev.poll(&mut [&mut self.ip_bus.inner]) {
             match self.bootstate {
@@ -131,53 +133,84 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                     }
                 }
                 UsbIpBootState::Normal => {
-                    self.process_usb(usbtxring, usbrxring);
+                    self.process_usb(usbring.0, usbring.1);
                 }
             }
         }
-        self.process_messages(buffers, usbtxring, usbrxring);
+        self.process_messages(ethring, usbring.0, usbring.1);
     }
 
-    fn restart_rx(&mut self){
+    fn restart_rx(&mut self) {
         self.rxstate = IpRxState::AwaitHeader;
         self.currcnt = 0;
         self.txtransactioncnt = 0;
     }
-    
 
     fn process_messages(
         &mut self,
-        buffers: (RefMut<SyncBuf>, RefMut<SyncBuf>),
+        buffers: EthRingBuffers,
         usbtxring: &mut ConcurrentQueue<Usbtransaciton>,
         usbrxring: &mut ConcurrentQueue<Usbtransaciton>,
     ) {
-        let (mut rxbuf, mut txbuf) = buffers;
+        let (rxq, txq) = buffers;
 
-        if let IpTxState::Write = self.txstate {
-            // we can only send chunks of 64 bytes, so we will incrementally walk the buffer;
-            let mut msg: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
-            msg.clone_from_slice(
-                &self.ncmmsgtxbuf[self.txtransactioncnt..self.txtransactioncnt + EP_DATA_BUF_SIZE],
-            );
-            if let Ok(()) = usbtxring.push(msg) {
-                debug!("sent {} bytes", EP_DATA_BUF_SIZE);
-                //part of message sucesfully sent.
-                //increment the read pointer by size.
-                if self.txtransactioncnt >= self.usbmsgtotlen {
-                    //we've finished sending this message.
-                    //after sending, increment message sequence
-                    self.txheader.sequence += 1;
-                    self.txdatagram.datagrams.clear();
-                    self.txstate = IpTxState::Copy;
-                    self.txtransactioncnt = 0;
-                } else {
-                    self.txtransactioncnt += EP_DATA_BUF_SIZE;
+        //TX HANDLING
+        match self.txstate {
+            IpTxState::Ready => {
+                //we only need to copy the buffer
+                if let Ok((msg_len, msg)) = txq.pop() {
+                    //create a new datagram table entry for this message
+                    self.txdatagram.datagrams.push(NCMDatagram16 {
+                        index: 0x0020,
+                        length: msg_len as u16,
+                    });
+                    self.usbmsgtotlen = 0x0020 + msg_len;
+                    self.txheader.blocklen = self.usbmsgtotlen as u16;
+                    self.txdatagram.length = 0x0010;
+
+                    let headervec = self.txheader.conv_to_bytes();
+                    let datagramvec = self.txdatagram.conv_to_bytes();
+
+                    self.ncmmsgtxbuf[0x0000..0x000C].copy_from_slice(headervec.as_slice());
+                    self.ncmmsgtxbuf[0x0010..0x001C].copy_from_slice(datagramvec.as_slice());
+                    //TODO: this is only correct for 1 datagram
+                    self.ncmmsgtxbuf[0x0020..0x0020 + msg_len]
+                        .copy_from_slice(msg[0..msg_len].as_ref());
+                    debug!(
+                        "sending the following stream {:#02x}",
+                        self.ncmmsgtxbuf[0..self.usbmsgtotlen]
+                    );
+                    self.txstate = IpTxState::Sending;
                 }
-            } else {
-                warn!("usb tx ring is full, waiting.");
             }
-        }
+            IpTxState::Sending => {
+                // we can only send chunks of 64 bytes, so we will incrementally walk the buffer;
+                let mut msg: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
+                msg.clone_from_slice(
+                    &self.ncmmsgtxbuf
+                        [self.txtransactioncnt..self.txtransactioncnt + EP_DATA_BUF_SIZE],
+                );
+                if let Ok(()) = usbtxring.push(msg) {
+                    debug!("sent {} bytes", EP_DATA_BUF_SIZE);
+                    //part of message sucesfully sent.
+                    //increment the read pointer by size.
+                    if self.txtransactioncnt >= self.usbmsgtotlen {
+                        //we've finished sending this message.
+                        //after sending, increment message sequence
+                        self.txheader.sequence += 1;
+                        self.txdatagram.datagrams.clear(); // TODO: this is stopping us from sending more than 1 dgram
+                        self.txstate = IpTxState::Ready;
+                        self.txtransactioncnt = 0;
+                    } else {
+                        self.txtransactioncnt += EP_DATA_BUF_SIZE;
+                    }
+                } else {
+                    warn!("usb tx ring is full, waiting.");
+                }
+            }
+        };
 
+        // RX HANDLING
         let size = EP_DATA_BUF_SIZE;
         let usbbuf = match usbrxring.is_empty() {
             true => return,
@@ -189,14 +222,13 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                 if size < core::mem::size_of::<NCMTransferHeader>() {
                     panic!("How the fuck are we getting less than the header????");
                 }
-
                 // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
                 self.currheader = match usbbuf[0..size].try_into().ok() {
                     Some(x) => x,
                     None => return,
                 };
 
-                //start copying towards the rx buffer 
+                //start copying towards the rx buffer
                 self.ncmmsgrxbuf[0..EP_DATA_BUF_SIZE].copy_from_slice(&usbbuf);
                 self.currcnt += EP_DATA_BUF_SIZE;
 
@@ -206,15 +238,14 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                 }
 
                 self.rxstate = IpRxState::CopyEntireMsg;
-               
             }
             IpRxState::CopyEntireMsg => {
-                if self.currcnt >= self.currheader.blocklen as usize{
+                if self.currcnt >= self.currheader.blocklen as usize {
                     //we finished copying the entire message, time to start porcessing the transaction
                     self.rxstate = IpRxState::ProcessNDP;
-                }
-                else{
-                    self.ncmmsgrxbuf[self.currcnt..self.currcnt+EP_DATA_BUF_SIZE].copy_from_slice(&usbbuf);
+                } else {
+                    self.ncmmsgrxbuf[self.currcnt..self.currcnt + EP_DATA_BUF_SIZE]
+                        .copy_from_slice(&usbbuf);
                     self.currcnt += EP_DATA_BUF_SIZE;
                 }
             }
@@ -225,59 +256,31 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             }
 
             IpRxState::CopyToEthBuf => {
-                const MAXSIZE:u16 = NCM_MAX_IN_SIZE as u16;
-                info!("processing {} datagrams",self.currndp.datagrams.len());
-                self.currndp.datagrams.iter().for_each(|dgram|{
-                    match dgram.length{
-                        0 =>  (),
+                const MAXSIZE: u16 = NCM_MAX_IN_SIZE as u16;
+                info!("processing {} datagrams", self.currndp.datagrams.len());
+                self.currndp.datagrams.iter().for_each(|dgram| {
+                    match dgram.length {
+                        0 => (),
                         1..=MAXSIZE => {
                             //since we know currently that only 1 dgram is support, we'll copy it directly
                             let idx_uz = dgram.index as usize;
                             let len_uz = dgram.length as usize;
-                            rxbuf.buf[0..len_uz].copy_from_slice(&self.ncmmsgrxbuf[idx_uz..idx_uz+len_uz]);
-                            self.rxstate = IpRxState::Reply;
-                            rxbuf.len = len_uz;
-                            rxbuf.busy = BufState::Await;
-                        },
-                        _ => panic!("Somehow we received a packet that is too big.")
+                            let mut rxmsg: [u8; MTU] = [0u8; MTU];
+                            rxmsg[0..len_uz].copy_from_slice(&self.ncmmsgrxbuf[idx_uz..idx_uz + len_uz]);
+                            
+                            if let Err(x) =  rxq.push((len_uz, rxmsg)){
+                                match x {
+                                    PushError::Full(_y) => warn!("rxq is full!"),
+                                    PushError::Closed(_y) => warn!("rxq is closed!")
+                                }
+                            }; //TODO: now that we did this we can push more than one message!
+                            
+                            
+                        }
+                        _ => panic!("Somehow we received a packet that is too big."),
                     }
                 });
-            }
-                
-            IpRxState::Reply => {
-                if let BufState::Writing = txbuf.busy {
-                    //we only need to copy the buffer
-                    if let IpTxState::Copy = self.txstate {
-                        //create a new datagram table entry for this message
-                        self.txdatagram.datagrams.push(NCMDatagram16 {
-                            index: 0x0020,
-                            length: txbuf.len as u16,
-                        });
-                        self.usbmsgtotlen = 0x0020 + txbuf.len;
-                        self.txheader.blocklen = self.usbmsgtotlen as u16;
-                        self.txdatagram.length = 0x0010;
-
-                        let headervec = self.txheader.conv_to_bytes();
-                        let datagramvec = self.txdatagram.conv_to_bytes();
-
-                        self.ncmmsgtxbuf[0x0000..0x000C].copy_from_slice(headervec.as_slice());
-                        self.ncmmsgtxbuf[0x0010..0x001C].copy_from_slice(datagramvec.as_slice());
-                        //TODO: this is only correct for 1 datagram
-                        self.ncmmsgtxbuf[0x0020..0x0020 + txbuf.len]
-                            .copy_from_slice(txbuf.buf[0..txbuf.len].as_ref());
-
-                        debug!(
-                            "sending the following stream {:#02x}",
-                            self.ncmmsgtxbuf[0..self.usbmsgtotlen]
-                        );
-                        self.txstate = IpTxState::Write;
-                        txbuf.busy = BufState::Empty;
-                        self.rxstate = IpRxState::AwaitHeader;
-                    }
-                }
-                else{
-                    self.restart_rx();
-                } 
+                self.restart_rx();
             }
         }
     }

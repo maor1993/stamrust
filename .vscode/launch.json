@@ -41,7 +41,7 @@
             "cwd": "${workspaceRoot}",
             "preLaunchTask": "Cargo Build (debug)",
             "executable": "target/thumbv7em-none-eabi/debug/stamrust",
-            "gdbTarget": "192.168.192.42:3333",
+            "gdbTarget": "192.168.1.44:3333",
             "device": "STM32L412KBU6",
             "svdFile": "${workspaceRoot}/.vscode/STM32L4x2.svd",
             "postLaunchCommands": [

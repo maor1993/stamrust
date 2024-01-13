@@ -1,13 +1,12 @@
 #![no_std]
 #![no_main]
 
-use core::borrow::BorrowMut;
 use core::cell::RefCell;
 
 //runtime
 use concurrent_queue::ConcurrentQueue;
-use cortex_m::interrupt::{CriticalSection, Mutex};
-use cortex_m::peripheral::SYST;
+// use cortex_m::interrupt::{CriticalSection, Mutex};
+// use cortex_m::peripheral::SYST;
 use cortex_m_rt::entry;
 use cortex_m_rt::exception;
 use defmt::info;
@@ -18,8 +17,8 @@ use usbipserver::Usbtransaciton;
 // hal
 use stm32l4xx_hal::delay::Delay;
 use stm32l4xx_hal::device::TIM1;
-use stm32l4xx_hal::gpio::{Output, Pin, PushPull};
-use stm32l4xx_hal::interrupt;
+// use stm32l4xx_hal::gpio::{Output, Pin, PushPull};
+// use stm32l4xx_hal::interrupt;
 use stm32l4xx_hal::pwm::*;
 use stm32l4xx_hal::rng::Rng;
 use stm32l4xx_hal::usb::{Peripheral, UsbBus};
@@ -208,9 +207,10 @@ fn main() -> ! {
 
     let mut rbusbncm = ConcurrentQueue::<Usbtransaciton>::bounded(4);
     let mut rbncmusb = ConcurrentQueue::<Usbtransaciton>::bounded(4);
+
     loop {
         let looptime = get_counter();
-        usbip.run_loop(tcpserv.get_bufs(), &mut rbusbncm, &mut rbncmusb);
+        usbip.run_loop(tcpserv.get_bufs(), (&mut rbusbncm, &mut rbncmusb));
         tcpserv.eth_task(looptime);
         lastlooptime = finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
         perfcounter += 1;

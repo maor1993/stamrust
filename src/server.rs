@@ -1,20 +1,17 @@
 extern crate alloc;
 
-use core::cell::RefMut;
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities};
 use smoltcp::socket::tcp::State;
-use smoltcp::socket::{icmp, tcp};
+use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::EthernetAddress;
-use smoltcp::wire::{Icmpv4Packet, Icmpv4Repr};
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
-use crate::ncm_netif::{StmPhy, SyncBuf};
+use crate::ncm_netif::{StmPhy, EthRingBuffers};
 use defmt::{debug, info};
 
 const TESTWEBSITE: &[u8] = include_bytes!("../static/index.html");
@@ -24,7 +21,6 @@ pub struct TcpServer<'a> {
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
-    icmp_handle: SocketHandle,
     curr_data_idx: usize,
 }
 
@@ -50,25 +46,17 @@ impl<'a> TcpServer<'a> {
         let tcp1_tx_buffer = tcp::SocketBuffer::new(vec![0; 128]);
         let tcp1_socket = tcp::Socket::new(tcp1_rx_buffer, tcp1_tx_buffer);
 
-        let icmp_rx_buffer =
-            icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-        let icmp_tx_buffer =
-            icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-        let icmp_socket = icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
-
         // let dhcp_config = dhcpv4::Config{address:Ipv4Cidr::new(, 24)};
 
         // dhcp_socket.
 
         let mut sockets = SocketSet::new(vec![]);
         let tcp1_handle = sockets.add(tcp1_socket);
-        let icmp_handle = sockets.add(icmp_socket);
         TcpServer {
             device,
             iface,
             sockets,
             tcp1_handle,
-            icmp_handle,
             curr_data_idx: 0,
         }
     }
@@ -115,10 +103,11 @@ impl<'a> TcpServer<'a> {
         
     
     }
-    pub fn get_bufs(&mut self) -> (RefMut<SyncBuf>, RefMut<SyncBuf>) {
+    pub fn get_bufs(&mut self) -> EthRingBuffers {
+        debug!("borrowing!");
         (
-            self.device.rxbuf.borrow_mut(),
-            self.device.txbuf.borrow_mut(),
+            &mut self.device.txq,
+            &mut self.device.rxq,
         )
     }
 }
