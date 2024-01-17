@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use defmt::debug;
 use defmt::Format;
+use defmt::warn;
 //cdc_ncm
 //an implmentation of the mcm mode for cdc
 use num_enum::TryFromPrimitive;
@@ -28,7 +29,7 @@ const CDC_TYPE_UNION: u8 = 0x06;
 
 const ETH_NET_FUNC_DESC: u8 = 0x0f;
 
-pub const NCM_MAX_SEGMENT_SIZE: usize = 1514;
+pub const NCM_MAX_SEGMENT_SIZE: u16 = 1514;
 
 const USBD_ISTR_INTERFACES: u8 = 0x00;
 
@@ -39,16 +40,6 @@ pub const NTH16_SIGNATURE: &[u8] = "NCMH".as_bytes();
 pub const NDP16_SIGNATURE: &[u8] = "NCM0".as_bytes();
 
 pub const EP_DATA_BUF_SIZE: usize = 64;
-
-#[repr(u8)]
-#[derive(Default, PartialEq)]
-pub enum NTBState {
-    #[default]
-    Empty = 0,
-    Processing = 1,
-    Transferring = 2,
-    Ready = 3,
-}
 
 #[derive(Debug, defmt::Format, TryFromPrimitive)]
 #[repr(u8)]
@@ -100,12 +91,6 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
         }
     }
 
-    /// Gets the maximum packet size in bytes.
-    pub fn max_packet_size(&self) -> u16 {
-        // The size is the same for both endpoints.
-        self.read_ep.max_packet_size()
-    }
-
     /// Writes a single packet into the IN endpoint.
     pub fn write_packet(&mut self, data: &[u8]) -> Result<usize> {
         self.write_ep.write(data)
@@ -114,11 +99,6 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
     /// Reads a single packet from the OUT endpoint.
     pub fn read_packet(&mut self, data: &mut [u8]) -> Result<usize> {
         self.read_ep.read(data)
-    }
-
-    /// Gets the address of the IN endpoint.
-    pub(crate) fn write_ep_address(&self) -> EndpointAddress {
-        self.write_ep.address()
     }
 
     pub fn send_notification(&mut self, data: &[u8]) -> Result<usize> {
@@ -179,8 +159,8 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                 0x0,                                        //eth stats
                 0x0,                                        //eth stats
                 0x0,                                        //eth stats
-                (NCM_MAX_SEGMENT_SIZE & 0x0000_00ff) as u8, //max segment size
-                ((NCM_MAX_SEGMENT_SIZE & 0x0000_ff00) >> 8) as u8, //max segment size
+                (NCM_MAX_SEGMENT_SIZE & 0x00ff) as u8, //max segment size
+                ((NCM_MAX_SEGMENT_SIZE & 0xff00) >> 8) as u8, //max segment size
                 0x0,                                        //mc filters?
                 0x0,
                 0x0, //power filters..?
@@ -193,7 +173,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             &[
                 0x1A, //ncm func desc
                 0x00, 0x01, //ncm version
-                0x00, //network capabilites
+                0x01, //network capabilites
             ],
         )?;
 
@@ -227,7 +207,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                 debug!("handled request {:08x}", _request);
                 xfer.accept().ok();
             } else {
-                debug!("uhandled out request {:08x}", req.request);
+                warn!("uhandled out request {:08x}", req.request);
                 xfer.reject().ok();
             }
         }
@@ -280,8 +260,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                     }
                     CDCRequests::GetNTBInputSize => {
                         xfer.accept(|data| {
-                            data[0..3]
-                                .copy_from_slice(&self.write_ep.max_packet_size().to_le_bytes());
+                            data[0..3].copy_from_slice(&NCM_MAX_SEGMENT_SIZE.to_le_bytes());
                             Ok(4)
                         })
                         .ok();
@@ -291,7 +270,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                     }
                 }
             } else {
-                debug!("uhandled in request {}", req.request);
+                warn!("uhandled in request {}", req.request);
                 xfer.reject().ok();
             }
         }

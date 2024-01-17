@@ -4,7 +4,6 @@ use crate::cdc_ncm::{
 use alloc::vec::Vec;
 use core::array::TryFromSliceError;
 use core::mem::size_of;
-use defmt::debug;
 use usb_device::bus::UsbBus;
 use usb_device::class_prelude::*;
 extern crate alloc;
@@ -293,46 +292,5 @@ where
         self.inner.send_notification(conmsg.as_slice())
     }
 
-    pub fn _ncm_writeall(&mut self) {
-        //check if there are is any data in buf
-    }
-
-    //TODO: these fucntions handle exit from stall, need to ensure if we even need it.
-    // pub fn ncm_indata(&mut self) -> Result<(), NCMError> {
-    //     self.ip_in.send_state = NTBState::Empty;
-    //     if self.ip_in.fill_state == NTBState::Ready{
-    //     }
-    //     Ok(())
-    // }
-
-    // pub fn ncm_outdata(&mut self) -> Result<(), NCMError>{
-    //     Ok(())
-    // }
 }
 
-impl<B> UsbClass<B> for UsbIp<'_, B>
-where
-    B: UsbBus,
-{
-    fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> Result<(), UsbError> {
-        self.inner.get_configuration_descriptors(writer)
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset();
-    }
-
-    // fn endpoint_in_complete(&mut self, addr: EndpointAddress) {
-    //     if addr == self.inner.write_ep_address() {
-    //         self.flush().ok();
-    //     }
-    // }
-
-    fn control_in(&mut self, xfer: ControlIn<B>) {
-        self.inner.control_in(xfer);
-    }
-
-    fn control_out(&mut self, xfer: ControlOut<B>) {
-        self.inner.control_out(xfer);
-    }
-}

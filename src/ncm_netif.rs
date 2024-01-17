@@ -36,7 +36,6 @@ impl phy::Device for StmPhy {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        // let txq = self.txq;
         if !self.txq.is_full(){
             return Some(StmPhyTxToken(&mut self.txq));
         }
@@ -79,7 +78,7 @@ impl<'a> phy::TxToken for StmPhyTxToken<'a> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut output = [0u8;MTU];
-        let result = f(&mut output);
+        let result = f(&mut output[0..len]);
         self.0.push((len,output)).unwrap();
         //update buffer with new pending packet
         result

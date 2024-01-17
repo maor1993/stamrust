@@ -104,10 +104,9 @@ impl<'a> TcpServer<'a> {
     
     }
     pub fn get_bufs(&mut self) -> EthRingBuffers {
-        debug!("borrowing!");
         (
-            &mut self.device.txq,
             &mut self.device.rxq,
+            &mut self.device.txq,
         )
     }
 }

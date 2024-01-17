@@ -207,7 +207,6 @@ fn main() -> ! {
 
     let mut rbusbncm = ConcurrentQueue::<Usbtransaciton>::bounded(4);
     let mut rbncmusb = ConcurrentQueue::<Usbtransaciton>::bounded(4);
-
     loop {
         let looptime = get_counter();
         usbip.run_loop(tcpserv.get_bufs(), (&mut rbusbncm, &mut rbncmusb));
@@ -219,7 +218,7 @@ fn main() -> ! {
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        // info!("looptime:{} loops: {}", looptime, cnt);
+        info!("seconds:{} loops: {}", looptime/1000, cnt);
         *cnt = 0;
         looptime
     } else {

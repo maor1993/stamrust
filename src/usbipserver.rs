@@ -10,7 +10,7 @@ use crate::intf::{NCMDatagram16, NCMDatagramPointerTable, NCMTransferHeader, ToB
 
 use concurrent_queue::{ConcurrentQueue, PushError};
 
-pub type Usbtransaciton = [u8; EP_DATA_BUF_SIZE];
+pub type Usbtransaciton = (usize,[u8; EP_DATA_BUF_SIZE]);
 
 pub type UsbRingBuffers<'a> = (
     &'a mut ConcurrentQueue<Usbtransaciton>,
@@ -51,7 +51,7 @@ pub struct UsbIpManager<'a, B: UsbBus> {
     ncmmsgtxbuf: [u8; NCM_MAX_OUT_SIZE],
     ncmmsgrxbuf: [u8; NCM_MAX_IN_SIZE],
     usbmsgtotlen: usize,
-    msgtxbuf: [u8; EP_DATA_BUF_SIZE],
+    currtxbuf: (usize,[u8; EP_DATA_BUF_SIZE]),
     msghandled: bool,
 }
 
@@ -72,7 +72,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             ncmmsgtxbuf: [0u8; NCM_MAX_OUT_SIZE],
             ncmmsgrxbuf: [0u8; NCM_MAX_IN_SIZE],
             usbmsgtotlen: 0,
-            msgtxbuf: [0u8; EP_DATA_BUF_SIZE],
+            currtxbuf: (0,[0u8; EP_DATA_BUF_SIZE]),
             msghandled: true,
         }
     }
@@ -89,25 +89,28 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
     ) {
         if !usbrxring.is_full() {
             let mut usbbuf: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
-            if let Ok(_size) = self.ip_bus.inner.read_packet(usbbuf.as_mut_slice()) {
+            if let Ok(size) = self.ip_bus.inner.read_packet(usbbuf.as_mut_slice()) {
                 // debug!("usb buf receving {} bytes", size);
-                usbrxring.push(usbbuf).unwrap();
+                usbrxring.push((size,usbbuf)).unwrap();
             }
         } else {
             warn!("usb rx ring is full! flushing.");
             usbrxring.try_iter().for_each(|_x| ());
         }
 
-        if self.msghandled & !usbtxring.is_empty() {
-            self.msgtxbuf = usbtxring.pop().unwrap();
-            self.msghandled = false
+        if self.msghandled{
+            if let Ok(x) = usbtxring.pop(){
+                self.currtxbuf = x;
+                self.msghandled = false;
+            }
         }
-
-        if !self.msghandled {
-            if let Ok(_size) = self.ip_bus.inner.write_packet(&self.msgtxbuf[0..]) {
-                info!(
+        else 
+        {
+            let (size,msg) = self.currtxbuf;
+            if let Ok(_size) = self.ip_bus.inner.write_packet(&msg[0..size]) {
+                debug!(
                     "sending the following buffer to pc {:#02x}",
-                    self.msgtxbuf[0..]
+                    msg[0..size]
                 );
                 self.msghandled = true;
             }
@@ -186,12 +189,15 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             IpTxState::Sending => {
                 // we can only send chunks of 64 bytes, so we will incrementally walk the buffer;
                 let mut msg: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
-                msg.clone_from_slice(
+                let bytestocopy = (self.usbmsgtotlen -self.txtransactioncnt).min(EP_DATA_BUF_SIZE);
+                msg[0..bytestocopy].clone_from_slice(
                     &self.ncmmsgtxbuf
-                        [self.txtransactioncnt..self.txtransactioncnt + EP_DATA_BUF_SIZE],
+                        [self.txtransactioncnt..self.txtransactioncnt + bytestocopy],
                 );
-                if let Ok(()) = usbtxring.push(msg) {
-                    debug!("sent {} bytes", EP_DATA_BUF_SIZE);
+                
+                if let Ok(()) = usbtxring.push((bytestocopy,msg)) {
+                    debug!("sent {} bytes", bytestocopy);
+                    self.txtransactioncnt += bytestocopy;
                     //part of message sucesfully sent.
                     //increment the read pointer by size.
                     if self.txtransactioncnt >= self.usbmsgtotlen {
@@ -201,9 +207,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                         self.txdatagram.datagrams.clear(); // TODO: this is stopping us from sending more than 1 dgram
                         self.txstate = IpTxState::Ready;
                         self.txtransactioncnt = 0;
-                    } else {
-                        self.txtransactioncnt += EP_DATA_BUF_SIZE;
-                    }
+                    } 
                 } else {
                     warn!("usb tx ring is full, waiting.");
                 }
@@ -211,8 +215,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
         };
 
         // RX HANDLING
-        let size = EP_DATA_BUF_SIZE;
-        let usbbuf = match usbrxring.is_empty() {
+        let (size,usbbuf) = match usbrxring.is_empty() {
             true => return,
             false => usbrxring.pop().unwrap(),
         };
@@ -220,7 +223,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
         match self.rxstate {
             IpRxState::AwaitHeader => {
                 if size < core::mem::size_of::<NCMTransferHeader>() {
-                    panic!("How the fuck are we getting less than the header????");
+                    return //dont handle partial ncm headers
                 }
                 // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
                 self.currheader = match usbbuf[0..size].try_into().ok() {
@@ -229,8 +232,8 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                 };
 
                 //start copying towards the rx buffer
-                self.ncmmsgrxbuf[0..EP_DATA_BUF_SIZE].copy_from_slice(&usbbuf);
-                self.currcnt += EP_DATA_BUF_SIZE;
+                self.ncmmsgrxbuf[0..size].copy_from_slice(&usbbuf[0..size]);
+                self.currcnt += size;
 
                 //sanity check
                 if self.currheader.blocklen > NCM_MAX_IN_SIZE as u16 {
@@ -244,9 +247,9 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                     //we finished copying the entire message, time to start porcessing the transaction
                     self.rxstate = IpRxState::ProcessNDP;
                 } else {
-                    self.ncmmsgrxbuf[self.currcnt..self.currcnt + EP_DATA_BUF_SIZE]
-                        .copy_from_slice(&usbbuf);
-                    self.currcnt += EP_DATA_BUF_SIZE;
+                    self.ncmmsgrxbuf[self.currcnt..self.currcnt + size]
+                        .copy_from_slice(&usbbuf[0..size]);
+                    self.currcnt += size;
                 }
             }
 
@@ -257,7 +260,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
 
             IpRxState::CopyToEthBuf => {
                 const MAXSIZE: u16 = NCM_MAX_IN_SIZE as u16;
-                info!("processing {} datagrams", self.currndp.datagrams.len());
+                debug!("processing {} datagrams", self.currndp.datagrams.len());
                 self.currndp.datagrams.iter().for_each(|dgram| {
                     match dgram.length {
                         0 => (),
