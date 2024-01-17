@@ -13,21 +13,25 @@ use defmt::info;
 use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _;
+use stm32_hal2::pac::TIM1;
 use usbipserver::Usbtransaciton;
 // hal
-use stm32l4xx_hal::delay::Delay;
-use stm32l4xx_hal::device::TIM1;
-// use stm32l4xx_hal::gpio::{Output, Pin, PushPull};
-// use stm32l4xx_hal::interrupt;
-use stm32l4xx_hal::pwm::*;
-use stm32l4xx_hal::rng::Rng;
-use stm32l4xx_hal::usb::{Peripheral, UsbBus};
-use stm32l4xx_hal::{prelude::*, stm32};
+use stm32_hal2::{
+    clocks::{self, Clk48Src, Clocks, CrsSyncSrc},
+    gpio::{Pin, PinMode, Port},
+    pac,
+    usb::{self,Peripheral, UsbBus, UsbBusType},
+    rng::{self,Rng},
+    timer::{Timer,TimChannel,OutputCompare,TimerConfig}
+    
+};
+
+
 use usb_device::prelude::*;
 
 //app
 mod cdc_ncm;
-use crate::cdc_ncm::USB_CLASS_CDC;
+use crate::cdc_ncm::{USB_CLASS_CDC,CDC_SUBCLASS_NCM};
 mod intf;
 use crate::intf::UsbIp;
 
@@ -54,7 +58,6 @@ fn SysTick() {
 }
 
 // type LedPin = Pin<Output<PushPull>, stm32l4xx_hal::gpio::H8, 'A', 8>;
-type Rgb = (Pwm<TIM1, C1>, Pwm<TIM1, C2>, Pwm<TIM1, C3>);
 
 enum RgbLed {
     Red,
@@ -63,25 +66,28 @@ enum RgbLed {
 }
 
 struct RgbControl {
-    rgb: Rgb,
+    rgb: Timer<TIM1>,
 }
 impl RgbControl {
-    fn new(rgb: Rgb) -> Self {
+    fn new(rgb: Timer<TIM1>) -> Self {
         RgbControl { rgb }
     }
     fn set_duty(&mut self, led: RgbLed, duty: u16) {
-        let duty_actual = self.rgb.0.get_max_duty() * (100 - duty) / 100;
-        match led {
-            RgbLed::Red => self.rgb.0.set_duty(duty_actual),
-            RgbLed::Green => self.rgb.1.set_duty(duty_actual),
-            RgbLed::Blue => self.rgb.2.set_duty(duty_actual),
-        }
+        let max_duty = self.rgb.get_max_duty();
+
+        let channel = match led {
+            RgbLed::Red => TimChannel::C1,
+            RgbLed::Green => TimChannel::C2,
+            RgbLed::Blue => TimChannel::C3,
+        };
+
+        self.rgb.set_duty(channel, max_duty*duty/100);
     }
 
     fn active_all_pwms(&mut self) {
-        self.rgb.0.enable();
-        self.rgb.1.enable();
-        self.rgb.2.enable();
+        self.rgb.enable_pwm_output(TimChannel::C1, OutputCompare::Pwm1, 0.0);
+        self.rgb.enable_pwm_output(TimChannel::C2, OutputCompare::Pwm1, 0.0);
+        self.rgb.enable_pwm_output(TimChannel::C3, OutputCompare::Pwm1, 0.0);
     }
 }
 
@@ -90,53 +96,55 @@ struct ProjectPeriphs {
     rgb: RgbControl,
     usb: Peripheral,
     rng: Rng,
-    delay: Delay,
 }
 impl ProjectPeriphs {
     fn new() -> Self {
-        let dp = stm32::Peripherals::take().unwrap();
+        let dp = pac::Peripherals::take().unwrap();
         let mut arm = cortex_m::Peripherals::take().unwrap();
 
-        let mut flash = dp.FLASH.constrain();
-        let mut rcc = dp.RCC.constrain();
-        let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
+        let clock_cfg = Clocks {
+            // Enable the HSI48 oscillator, so we don't need an external oscillator, and
+            // aren't restricted in our PLL config.
+            hsi48_on: true,
+            clk48_src: Clk48Src::Hsi48,
+            ..Default::default()
+        };
+        clock_cfg.setup().unwrap();
+        clocks::enable_crs(CrsSyncSrc::Usb);
 
-        let _clocks = rcc
-            .cfgr
-            .hsi48(true)
-            .sysclk(80.MHz())
-            .freeze(&mut flash.acr, &mut pwr);
 
-        let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
-        arm.SYST.set_reload(_clocks.sysclk().to_kHz() - 1);
+        dp.RCC.apb1enr1.modify(|_, w| w.pwren().set_bit());
+        usb::enable_usb_pwr();
+
+        let _usb_dm = Pin::new(Port::A,11,PinMode::Alt(14));
+        let _usb_dp = Pin::new(Port::A,12,PinMode::Alt(14));
+
+        arm.SYST.set_reload(clock_cfg.sysclk()/1000 - 1);
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
-        let c1 = gpioa
-            .pa8
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
-        let c2 = gpioa
-            .pa9
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
-        let c3 = gpioa
-            .pa10
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
 
-        let rgb = dp.TIM1.pwm((c1, c2, c3), 1.MHz(), _clocks, &mut rcc.apb2);
-        let rgbcon = RgbControl::new(rgb);
+
+        let pwm_timer = Timer::new_tim1(
+            dp.TIM1,
+            2_400.,
+            TimerConfig {
+                auto_reload_preload: true,
+                // Setting auto reload preload allow changing frequency (period) while the timer is running.
+                ..Default::default()
+            },
+            &clock_cfg,
+        ); 
+
+
+        let rgbcon = RgbControl::new(pwm_timer);
         let usb = Peripheral {
-            usb: dp.USB,
-            pin_dm: gpioa
-                .pa11
-                .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
-            pin_dp: gpioa
-                .pa12
-                .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
+            regs: dp.USB
         };
-        let rng = dp.RNG.enable(&mut rcc.ahb2, _clocks);
+        let rng = Rng::new(dp.RNG);
 
         ProjectPeriphs {
             // sanity_led: gpioa.pa8.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper),
-            delay: Delay::new(arm.SYST, _clocks),
+            // delay: Delay::new(arm.SYST, _clocks),
             usb,
             rgb: rgbcon,
             rng,
@@ -147,27 +155,6 @@ impl ProjectPeriphs {
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-fn enable_crs() {
-    let rcc = unsafe { &(*stm32::RCC::ptr()) };
-    rcc.apb1enr1.modify(|_, w| w.crsen().set_bit());
-    let crs = unsafe { &(*stm32::CRS::ptr()) };
-    // Initialize clock recovery
-    // Set autotrim enabled.
-    crs.cr.modify(|_, w| w.autotrimen().set_bit());
-    // Enable CR
-    crs.cr.modify(|_, w| w.cen().set_bit());
-}
-
-/// Enables VddUSB power supply
-fn enable_usb_pwr() {
-    // Enable PWR peripheral
-    let rcc = unsafe { &(*stm32::RCC::ptr()) };
-    rcc.apb1enr1.modify(|_, w| w.pwren().set_bit());
-
-    // Enable VddUSB
-    let pwr = unsafe { &*stm32::PWR::ptr() };
-    pwr.cr2.modify(|_, w| w.usv().set_bit());
-}
 
 fn init_heap() {
     use core::mem::MaybeUninit;
@@ -180,22 +167,17 @@ fn init_heap() {
 #[entry]
 fn main() -> ! {
     init_heap();
-    enable_crs();
-    enable_usb_pwr();
 
     let mut periphs = ProjectPeriphs::new();
     let usb_bus = UsbBus::new(periphs.usb);
     let ip = UsbIp::new(&usb_bus);
     let usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x0483, 0xffff))
-        .manufacturer("STMicroelectronics")
-        .product("IP over USB Demonstrator")
-        .serial_number("test")
-        .device_release(0x0100)
         .device_class(USB_CLASS_CDC)
+        .device_sub_class(CDC_SUBCLASS_NCM)
         .build();
 
     info!("starting server...");
-    let mut tcpserv = TcpServer::init_server(periphs.rng.get_random_data());
+    let mut tcpserv = TcpServer::init_server(rng::read() as u32);
     let mut usbip = UsbIpManager::new(ip, usb_dev);
     periphs.rgb.active_all_pwms();
     periphs.rgb.set_duty(RgbLed::Red, 20);

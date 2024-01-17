@@ -261,16 +261,12 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
     }
 }
 
-pub struct UsbIp<'a, B>
-where
-    B: UsbBus,
+pub struct UsbIp<'a, B:UsbBus>
 {
     pub inner: CdcNcmClass<'a, B>,
 }
 
-impl<B> UsbIp<'_, B>
-where
-    B: UsbBus,
+impl<B: UsbBus> UsbIp<'_, B>
 {
     /// Creates a new USB serial port with the provided UsbBus and 128 byte read/write buffers.
     pub fn new(alloc: &'_ UsbBusAllocator<B>) -> UsbIp<'_, B> {

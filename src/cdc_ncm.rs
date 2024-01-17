@@ -1,4 +1,3 @@
-use core::mem;
 use core::mem::size_of;
 
 extern crate alloc;
@@ -107,7 +106,7 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
 }
 
 impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
-    fn get_string(&self, index: StringIndex, _lang_id: u16) -> Option<&str> {
+    fn get_string(&self, index: StringIndex, _lang_id: usb_device::LangID) -> Option<&str> {
         match index.into() {
             4 => Some("IP Gateway"),
             5 => Some("0080E1000000"),
@@ -123,6 +122,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             USB_CLASS_CDC,
             CDC_SUBCLASS_NCM,
             CDC_PROTOCOL_NONE,
+            None
         )?;
 
         /* Comm Interface Descriptor */
