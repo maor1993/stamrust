@@ -1,9 +1,9 @@
 use core::mem::size_of;
 
 extern crate alloc;
-use alloc::vec::Vec;
+
 use defmt::debug;
-use defmt::Format;
+
 use defmt::warn;
 //cdc_ncm
 //an implmentation of the mcm mode for cdc
@@ -198,7 +198,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
 
     fn control_out(&mut self, xfer: ControlOut<B>) {
         let req = xfer.request();
-        let data = xfer.data();
+        let _data = xfer.data();
 
         if req.request_type == control::RequestType::Class {
             debug!("set request {:08x}", req.request);

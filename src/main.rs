@@ -20,7 +20,7 @@ use stm32_hal2::{
     clocks::{self, Clk48Src, Clocks, CrsSyncSrc},
     gpio::{Pin, PinMode, Port},
     pac,
-    usb::{self,Peripheral, UsbBus, UsbBusType},
+    usb::{self,Peripheral, UsbBus},
     rng::{self,Rng},
     timer::{Timer,TimChannel,OutputCompare,TimerConfig}
     
@@ -95,7 +95,6 @@ struct ProjectPeriphs {
     // sanity_led : LedPin,
     rgb: RgbControl,
     usb: Peripheral,
-    rng: Rng,
 }
 impl ProjectPeriphs {
     fn new() -> Self {
@@ -140,14 +139,14 @@ impl ProjectPeriphs {
         let usb = Peripheral {
             regs: dp.USB
         };
-        let rng = Rng::new(dp.RNG);
+        let _rng = Rng::new(dp.RNG);
 
         ProjectPeriphs {
             // sanity_led: gpioa.pa8.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper),
             // delay: Delay::new(arm.SYST, _clocks),
             usb,
             rgb: rgbcon,
-            rng,
+            // rng,
         }
     }
 }

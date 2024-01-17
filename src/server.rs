@@ -2,7 +2,7 @@ extern crate alloc;
 
 
 use alloc::vec;
-use alloc::vec::Vec;
+
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::State;
@@ -12,7 +12,7 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
 use crate::ncm_netif::{StmPhy, EthRingBuffers};
-use defmt::{debug, info};
+use defmt::{info};
 
 const TESTWEBSITE: &[u8] = include_bytes!("../static/index.html");
 
@@ -89,8 +89,8 @@ impl<'a> TcpServer<'a> {
 
 
     pub fn eth_task(&mut self, currtime: u32) {
-        let mut send_at = Instant::from_millis(currtime);
-        let ident: u16 = 0x22b;
+        let _send_at = Instant::from_millis(currtime);
+        let _ident: u16 = 0x22b;
         let timestamp = Instant::from_millis(currtime);
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);

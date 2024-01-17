@@ -1,4 +1,4 @@
-use defmt::{debug, info, warn};
+use defmt::{debug, warn};
 use usb_device::class_prelude::UsbBus;
 use usb_device::device::UsbDevice;
 

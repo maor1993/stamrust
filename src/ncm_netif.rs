@@ -1,4 +1,4 @@
-use defmt::{debug, warn, info};
+
 use smoltcp::phy::{self, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 use smoltcp::wire::IPV4_MIN_MTU;
