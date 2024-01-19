@@ -33,6 +33,7 @@ smoltcp = { version = "0.10.0", default-features = false, features = ["medium-et
 # features = ["stm32l412","rt","stm32-usbd"]  
 [dependencies.usb-device]
 path = "../usb-device"
+features = ["min-lang-id"]
 
 [dependencies.stm32-hal2 ]
 path = "../stm32-hal"

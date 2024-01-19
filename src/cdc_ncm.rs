@@ -45,9 +45,10 @@ pub const EP_DATA_BUF_SIZE: usize = 64;
 #[derive(Debug, defmt::Format, TryFromPrimitive)]
 #[repr(u8)]
 enum CDCRequests {
-    GetNTBParameters = 128,
-    GetNTBInputSize = 133,
-    SetNTBInputSize = 134,
+    SetEthernetPacketFilter = 0x43,
+    GetNTBParameters = 0x80,
+    GetNTBInputSize = 0x85,
+    SetNTBInputSize = 0x86,
 }
 
 pub struct CdcNcmClass<'a, B: UsbBus> {
@@ -77,6 +78,25 @@ struct NCMParameters {
     ndp_out_alignment: u16,
     ntb_out_max_datagrams: u16, /* Maximum number of datagrams in a single OUT NTB */
 }
+
+const LEN: usize = size_of::<NCMParameters>();
+const PARAMS: NCMParameters = NCMParameters {
+    length: LEN as u16,
+    ntb_formats_supported: 1,
+    ntb_in_maxsize: NCM_MAX_IN_SIZE as u32,
+    ndp_in_divisor: 4,
+    ndp_in_alignment: 4,
+    ndp_in_payload_remainder: 0,
+    ntb_out_maxsize: NCM_MAX_OUT_SIZE as u32,
+    ndp_out_divisor: 4,
+    ndp_out_alignment: 4,
+    ndp_out_payload_remainder: 4,
+    ntb_out_max_datagrams: 4, //FIXME: change back to 20 once multiple datagrams are supported
+    reserved: 0,
+};
+
+
+
 
 impl<B: UsbBus> CdcNcmClass<'_, B> {
     /// Creates a new CdcAcmClass with the provided UsbBus and max_packet_size in bytes. For
@@ -224,22 +244,6 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                 match request {
                     CDCRequests::GetNTBParameters => {
                         xfer.accept(|data| {
-                            const LEN: usize = size_of::<NCMParameters>();
-                            const PARAMS: NCMParameters = NCMParameters {
-                                length: LEN as u16,
-                                ntb_formats_supported: 1,
-                                ntb_in_maxsize: NCM_MAX_IN_SIZE as u32,
-                                ndp_in_divisor: 4,
-                                ndp_in_alignment: 4,
-                                ndp_in_payload_remainder: 0,
-                                ntb_out_maxsize: NCM_MAX_OUT_SIZE as u32,
-                                ndp_out_divisor: 4,
-                                ndp_out_alignment: 4,
-                                ndp_out_payload_remainder: 4,
-                                ntb_out_max_datagrams: 1, //FIXME: change back to 20 once multiple datagrams are supported
-                                reserved: 0,
-                            };
-
                             data[0..2].copy_from_slice(&PARAMS.length.to_le_bytes());
                             data[2..4].copy_from_slice(&PARAMS.ntb_formats_supported.to_le_bytes());
                             data[4..8].copy_from_slice(&PARAMS.ntb_in_maxsize.to_le_bytes());
@@ -267,8 +271,8 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
                         })
                         .ok();
                     }
-                    CDCRequests::SetNTBInputSize => {
-                        xfer.accept(|_data| Ok(0)).ok();
+                    _ => {
+                        xfer.reject().ok();
                     }
                 }
             } else {

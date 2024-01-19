@@ -47,7 +47,7 @@
             "postLaunchCommands": [
                 "monitor rtt server start 8765 0",
                 // should span the *right* part of RAM
-                "monitor rtt setup 0x20000000 0x30 \"SEGGER RTT\"",
+                "monitor rtt setup 0x20000448 0x30 \"SEGGER RTT\"",
                 "monitor rtt start",    
             ],
         }

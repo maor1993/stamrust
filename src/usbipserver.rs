@@ -2,13 +2,11 @@ use defmt::{debug, warn};
 use usb_device::class_prelude::{UsbBus, UsbBusAllocator};
 use usb_device::prelude::*;
 
-use crate::ncm_netif::{EthRingBuffers, MTU};
-
 use crate::cdc_ncm::EP_DATA_BUF_SIZE;
 use crate::intf::UsbIp;
 pub type Usbtransaciton = (usize, [u8; EP_DATA_BUF_SIZE]);
 use crate::cdc_ncm::{CDC_SUBCLASS_NCM, USB_CLASS_CDC};
-use concurrent_queue::{ConcurrentQueue, PushError};
+use concurrent_queue::ConcurrentQueue;
 
 pub type UsbRingBuffers<'a> = (
     &'a mut ConcurrentQueue<Usbtransaciton>,
@@ -34,6 +32,11 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
     pub fn new(usb_alloc: &'a UsbBusAllocator<B>) -> UsbIpManager<'a, B> {
         let ip_bus = UsbIp::new(usb_alloc);
         let usb_dev = UsbDeviceBuilder::new(usb_alloc, UsbVidPid(0x0483, 0xffff))
+            .strings(&[StringDescriptors::new(LangID::EN_US)
+                .manufacturer("STMicroelectronics")
+                .product("IP over USB Demonstrator")
+                .serial_number("test")])
+            .expect("failed to create strings")
             .device_class(USB_CLASS_CDC)
             .device_sub_class(CDC_SUBCLASS_NCM)
             .build();

@@ -12,7 +12,7 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
 use crate::ncm_netif::{StmPhy, EthRingBuffers};
-use defmt::{info};
+use defmt::info;
 
 const TESTWEBSITE: &[u8] = include_bytes!("../static/index.html");
 

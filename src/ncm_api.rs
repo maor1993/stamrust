@@ -17,7 +17,7 @@ use concurrent_queue::{ConcurrentQueue, PushError};
 use crate::usbipserver::Usbtransaciton;
 
 
-use defmt::{info,warn,debug};
+use defmt::{warn,debug};
 
 #[repr(C)]
 #[derive(Debug, defmt::Format, Clone)]
@@ -319,6 +319,7 @@ impl NcmApiManager{
         match self.rxstate {
             IpRxState::AwaitHeader => {
                 if size < core::mem::size_of::<NCMTransferHeader>() {
+                    warn!("got unaligned ncm msg");
                     return //dont handle partial ncm headers
                 }
                 // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
@@ -372,9 +373,7 @@ impl NcmApiManager{
                                     PushError::Full(_y) => warn!("rxq is full!"),
                                     PushError::Closed(_y) => warn!("rxq is closed!")
                                 }
-                            }; //TODO: now that we did this we can push more than one message!
-                            
-                            
+                            }; 
                         }
                         _ => panic!("Somehow we received a packet that is too big."),
                     }

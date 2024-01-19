@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-
-use core::borrow::BorrowMut;
 use core::cell::RefCell;
 
 //runtime
@@ -131,7 +129,7 @@ impl ProjectPeriphs {
         let _usb_dm = Pin::new(Port::A, 11, PinMode::Alt(14));
         let _usb_dp = Pin::new(Port::A, 12, PinMode::Alt(14));
 
-        arm.SYST.set_reload(clock_cfg.sysclk() / 1000 - 1);
+        arm.SYST.set_reload((clock_cfg.systick() / 8_000) - 1);
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
 
@@ -195,7 +193,7 @@ fn main() -> ! {
     with(|cs| {
         USBTXRING
             .borrow(cs)
-            .replace(Some(ConcurrentQueue::<Usbtransaciton>::bounded(4)));
+            .replace(Some(ConcurrentQueue::<Usbtransaciton>::bounded(8)));
         USBRXRING
             .borrow(cs)
             .replace(Some(ConcurrentQueue::<Usbtransaciton>::bounded(4)));
@@ -223,7 +221,7 @@ fn main() -> ! {
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        info!("seconds:{} loops: {}", looptime / 1000, cnt);
+        // info!("seconds:{} loops: {}", looptime / 1000, cnt);
         *cnt = 0;
         looptime
     } else {
