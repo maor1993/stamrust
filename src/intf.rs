@@ -1,90 +1,15 @@
-use crate::cdc_ncm::{
-    CdcNcmClass,NDP16_SIGNATURE, NTH16_SIGNATURE,
-};
-use alloc::vec::Vec;
-use core::array::TryFromSliceError;
+//intf
+//
+
+use crate::cdc_ncm::CdcNcmClass;
+
 use core::mem::size_of;
 use usb_device::bus::UsbBus;
 use usb_device::class_prelude::*;
+use core::array::TryFromSliceError;
 extern crate alloc;
-// const PAGE_SIZE: usize = 2048;
-
-// pub type NCMResult<T> = core::result::Result<T, NCMError>;
 
 
-#[repr(C)]
-#[derive(Debug, defmt::Format, Clone)]
-pub struct NCMTransferHeader {
-    pub signature: u32,
-    pub headerlen: u16,
-    pub sequence: u16,
-    pub blocklen: u16,
-    pub ndpindex: u16,
-}
-
-impl Default for NCMTransferHeader {
-    fn default() -> Self {
-        NCMTransferHeader {
-            signature: u32::from_le_bytes(NTH16_SIGNATURE.try_into().unwrap()),
-            headerlen: 0x000c,
-            sequence: 0,
-            blocklen: 0,
-            ndpindex: 0x0010,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, defmt::Format, Clone, Default)]
-pub struct NCMDatagram16 {
-    pub index: u16,
-    pub length: u16,
-}
-
-#[repr(C)]
-#[derive(Debug, defmt::Format, Clone)]
-pub struct NCMDatagramPointerTable {
-    pub signature: u32,
-    pub length: u16,
-    pub nextndpindex: u16,
-    pub datagrams: Vec<NCMDatagram16>,
-}
-
-impl Default for NCMDatagramPointerTable {
-    fn default() -> Self {
-        NCMDatagramPointerTable {
-            signature: u32::from_le_bytes(NDP16_SIGNATURE.try_into().unwrap()),
-            length: 0,
-            nextndpindex: 0,
-            datagrams: Vec::<NCMDatagram16>::new(),
-        }
-    }
-}
-
-
-/// A USB stack error.
-#[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum NCMError {
-    // 
-    TryFromSliceError,
-    //header has created the wrong signature
-    InvalidSignature,
-    //
-    ArrayError,
-
-    //
-    SizeError,
-
-    RXError,
-    TXError,
-}
-
-impl From<TryFromSliceError> for NCMError{
-    fn from(_value: TryFromSliceError) -> Self {
-        NCMError::TryFromSliceError
-    }
-}
 
 #[derive(Clone, Copy)]
 struct CdcSpeedChangeBody {
@@ -100,6 +25,7 @@ struct NotifyHeader {
     index: u16,
     length: u16,
 }
+
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -176,90 +102,6 @@ impl TryInto<[u8; size_of::<CdcConnectionNotifyMsg>()]> for CdcConnectionNotifyM
     }
 }
 
-pub trait ToBytes {
-    fn conv_to_bytes(&self) -> Vec<u8>;
-}
-
-impl ToBytes for NCMDatagramPointerTable {
-    fn conv_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&self.signature.to_le_bytes());
-        bytes.extend_from_slice(&self.length.to_le_bytes());
-        bytes.extend_from_slice(&self.nextndpindex.to_le_bytes());
-
-        self.datagrams.iter().for_each(|x| {
-            bytes.extend_from_slice(x.index.to_le_bytes().as_slice());
-            bytes.extend_from_slice(x.length.to_le_bytes().as_slice());
-        });
-
-        bytes
-    }
-}
-
-impl ToBytes for NCMTransferHeader {
-    fn conv_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&self.signature.to_le_bytes());
-        bytes.extend_from_slice(&self.headerlen.to_le_bytes());
-        bytes.extend_from_slice(&self.sequence.to_le_bytes());
-        bytes.extend_from_slice(&self.blocklen.to_le_bytes());
-        bytes.extend_from_slice(&self.ndpindex.to_le_bytes());
-
-        bytes
-    }
-}
-
-impl TryInto<NCMTransferHeader> for &[u8] {
-    type Error = NCMError;
-    fn try_into(self) -> Result<NCMTransferHeader, Self::Error> {
-        let signature = u32::from_le_bytes(self[0..4].try_into()?);
-        if signature != u32::from_le_bytes(NTH16_SIGNATURE.try_into()?) {
-            return Err(NCMError::InvalidSignature)
-        } 
-
-
-        Ok(NCMTransferHeader {
-            signature: u32::from_le_bytes(self[0..4].try_into()?),
-            headerlen: u16::from_le_bytes(self[4..6].try_into()?),
-            sequence: u16::from_le_bytes(self[6..8].try_into()?),
-            blocklen: u16::from_le_bytes(self[8..10].try_into()?),
-            ndpindex: u16::from_le_bytes(self[10..12].try_into()?),
-        })
-    }
-}
-
-impl TryInto<NCMDatagramPointerTable> for &[u8] {
-    type Error = NCMError;
-    fn try_into(self) -> Result<NCMDatagramPointerTable, Self::Error> {
-        let signature = u32::from_le_bytes(self[0..4].try_into()?);
-        
-        if signature != u32::from_le_bytes(NDP16_SIGNATURE.try_into()?) {
-            return Err(NCMError::InvalidSignature)
-        }
-        
-        let length = u16::from_le_bytes(self[4..6].try_into()?);
-        let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
-
-        let datagrams = self[8..(length as usize)]
-            .to_vec()
-            .chunks(4)
-            .map(|win| 
-                NCMDatagram16 {
-                index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
-                length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
-            })
-            .filter(|x| x.length != 0).collect::<Vec<NCMDatagram16>>();
-
-
-
-        Ok(NCMDatagramPointerTable {
-            signature,
-            length,
-            nextndpindex,
-            datagrams,
-        })
-    }
-}
 
 pub struct UsbIp<'a, B:UsbBus>
 {
@@ -275,12 +117,12 @@ impl<B: UsbBus> UsbIp<'_, B>
         }
     }
 
-    pub fn send_speed_notificaiton(&mut self) -> usb_device::Result<usize> where {
+    pub fn send_speed_notificaiton(&mut self) -> usb_device::Result<usize>  {
         let speedmsg: [u8; size_of::<CdcSpeedChangeMsg>()] =
             CdcSpeedChangeMsg::default().try_into().unwrap();
         self.inner.send_notification(speedmsg.as_slice())
     }
-    pub fn send_connection_notificaiton(&mut self) -> usb_device::Result<usize> where {
+    pub fn send_connection_notificaiton(&mut self) -> usb_device::Result<usize>  {
         //update internal state as connected
         // self.ip_in.borrow_mut().set_connection_state(true);
         let conmsg: [u8; size_of::<CdcConnectionNotifyMsg>()] =

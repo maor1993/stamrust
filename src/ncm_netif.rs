@@ -8,7 +8,7 @@ pub const MTU: usize = IPV4_MIN_MTU;
 const MAX_QUEUE_SIZE: usize = 2;
 
 pub type Ethmsg = (usize,[u8;MTU]);
-pub type EthRingBuffers<'a> = (&'a mut ConcurrentQueue<Ethmsg>,&'a mut ConcurrentQueue<Ethmsg>);
+pub type  EthRingBuffers<'a> = (&'a mut ConcurrentQueue<Ethmsg>,&'a mut ConcurrentQueue<Ethmsg>);
 
 pub struct StmPhy {
     pub rxq: ConcurrentQueue::<Ethmsg>,

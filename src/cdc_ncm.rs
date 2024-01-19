@@ -1,3 +1,6 @@
+//cdc ncm
+//implments the usb spec for CDC NCM mode
+
 use core::mem::size_of;
 
 extern crate alloc;
@@ -30,13 +33,12 @@ const ETH_NET_FUNC_DESC: u8 = 0x0f;
 
 pub const NCM_MAX_SEGMENT_SIZE: u16 = 1514;
 
-const USBD_ISTR_INTERFACES: u8 = 0x00;
+// const USBD_ISTR_INTERFACES: u8 = 0x00;
 
 pub const NCM_MAX_IN_SIZE: usize = 2048;
 pub const NCM_MAX_OUT_SIZE: usize = 2048;
 
-pub const NTH16_SIGNATURE: &[u8] = "NCMH".as_bytes();
-pub const NDP16_SIGNATURE: &[u8] = "NCM0".as_bytes();
+
 
 pub const EP_DATA_BUF_SIZE: usize = 64;
 
@@ -78,7 +80,7 @@ struct NCMParameters {
 
 impl<B: UsbBus> CdcNcmClass<'_, B> {
     /// Creates a new CdcAcmClass with the provided UsbBus and max_packet_size in bytes. For
-    pub fn new(alloc: &UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
+    pub fn new(alloc: &'_ UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
         CdcNcmClass {
             comm_if: alloc.interface(),
             ned_ep: alloc.interrupt(32, 20),
