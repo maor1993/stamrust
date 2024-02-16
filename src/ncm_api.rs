@@ -1,23 +1,19 @@
 //NCM API
 //processes ncm commands!
 
-
-
 extern crate alloc;
-use alloc::vec::Vec;
-use core::array::TryFromSliceError;
 use crate::cdc_ncm::EP_DATA_BUF_SIZE;
 use crate::cdc_ncm::{NCM_MAX_IN_SIZE, NCM_MAX_OUT_SIZE};
+use alloc::vec::Vec;
+use core::array::TryFromSliceError;
 pub const NTH16_SIGNATURE: &[u8] = "NCMH".as_bytes();
 pub const NDP16_SIGNATURE: &[u8] = "NCM0".as_bytes();
 
+use crate::ncm_netif::{EthRingBuffers, MTU};
+use crate::usbipserver::UsbRingBuffers;
+use concurrent_queue::PushError;
 
-use crate::ncm_netif::{EthRingBuffers,MTU};
-use concurrent_queue::{ConcurrentQueue, PushError};
-use crate::usbipserver::Usbtransaciton;
-
-
-use defmt::{warn,debug};
+use defmt::{debug, warn};
 
 #[repr(C)]
 #[derive(Debug, defmt::Format, Clone)]
@@ -68,12 +64,11 @@ impl Default for NCMDatagramPointerTable {
     }
 }
 
-
 /// A USB stack error.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum NCMError {
-    // 
+    //
     TryFromSliceError,
     //header has created the wrong signature
     InvalidSignature,
@@ -87,13 +82,11 @@ pub enum NCMError {
     TXError,
 }
 
-impl From<TryFromSliceError> for NCMError{
+impl From<TryFromSliceError> for NCMError {
     fn from(_value: TryFromSliceError) -> Self {
         NCMError::TryFromSliceError
     }
 }
-
-
 
 pub trait ToBytes {
     fn conv_to_bytes(&self) -> Vec<u8>;
@@ -133,9 +126,8 @@ impl TryInto<NCMTransferHeader> for &[u8] {
     fn try_into(self) -> Result<NCMTransferHeader, Self::Error> {
         let signature = u32::from_le_bytes(self[0..4].try_into()?);
         if signature != u32::from_le_bytes(NTH16_SIGNATURE.try_into()?) {
-            return Err(NCMError::InvalidSignature)
-        } 
-
+            return Err(NCMError::InvalidSignature);
+        }
 
         Ok(NCMTransferHeader {
             signature: u32::from_le_bytes(self[0..4].try_into()?),
@@ -151,25 +143,23 @@ impl TryInto<NCMDatagramPointerTable> for &[u8] {
     type Error = NCMError;
     fn try_into(self) -> Result<NCMDatagramPointerTable, Self::Error> {
         let signature = u32::from_le_bytes(self[0..4].try_into()?);
-        
+
         if signature != u32::from_le_bytes(NDP16_SIGNATURE.try_into()?) {
-            return Err(NCMError::InvalidSignature)
+            return Err(NCMError::InvalidSignature);
         }
-        
+
         let length = u16::from_le_bytes(self[4..6].try_into()?);
         let nextndpindex = u16::from_le_bytes(self[6..8].try_into()?);
 
         let datagrams = self[8..(length as usize)]
             .to_vec()
             .chunks(4)
-            .map(|win| 
-                NCMDatagram16 {
+            .map(|win| NCMDatagram16 {
                 index: u16::from_le_bytes(win[0..2].try_into().unwrap()),
                 length: u16::from_le_bytes(win[2..4].try_into().unwrap()),
             })
-            .filter(|x| x.length != 0).collect::<Vec<NCMDatagram16>>();
-
-
+            .filter(|x| x.length != 0)
+            .collect::<Vec<NCMDatagram16>>();
 
         Ok(NCMDatagramPointerTable {
             signature,
@@ -192,7 +182,7 @@ enum IpTxState {
     Sending,
 }
 
-pub struct NcmApiManager{
+pub struct NcmApiManager {
     rxstate: IpRxState,
     txstate: IpTxState,
     currheader: NCMTransferHeader,
@@ -204,29 +194,24 @@ pub struct NcmApiManager{
     ncmmsgtxbuf: [u8; NCM_MAX_OUT_SIZE],
     ncmmsgrxbuf: [u8; NCM_MAX_IN_SIZE],
     usbmsgtotlen: usize,
-
 }
 
-impl NcmApiManager{
-
-    pub fn new() -> Self{
-        NcmApiManager{
-        rxstate: IpRxState::AwaitHeader,
-        txstate: IpTxState::Ready,
-        currheader: NCMTransferHeader::default(),
-        currndp: NCMDatagramPointerTable::default(),
-        currcnt: 0,
-        txtransactioncnt: 0,
-        txheader: NCMTransferHeader::default(),
-        txdatagram: NCMDatagramPointerTable::default(),
-        ncmmsgtxbuf: [0u8; NCM_MAX_OUT_SIZE],
-        ncmmsgrxbuf: [0u8; NCM_MAX_IN_SIZE],
-        usbmsgtotlen: 0,
-
+impl NcmApiManager {
+    pub fn new() -> Self {
+        NcmApiManager {
+            rxstate: IpRxState::AwaitHeader,
+            txstate: IpTxState::Ready,
+            currheader: NCMTransferHeader::default(),
+            currndp: NCMDatagramPointerTable::default(),
+            currcnt: 0,
+            txtransactioncnt: 0,
+            txheader: NCMTransferHeader::default(),
+            txdatagram: NCMDatagramPointerTable::default(),
+            ncmmsgtxbuf: [0u8; NCM_MAX_OUT_SIZE],
+            ncmmsgrxbuf: [0u8; NCM_MAX_IN_SIZE],
+            usbmsgtotlen: 0,
         }
     }
-
-
 
     pub fn process_ndp(&mut self) {
         self.currndp = self.ncmmsgrxbuf[(self.currheader.ndpindex as usize)..]
@@ -235,23 +220,15 @@ impl NcmApiManager{
         self.rxstate = IpRxState::CopyToEthBuf;
     }
 
-
-
     fn restart_rx(&mut self) {
         self.rxstate = IpRxState::AwaitHeader;
         self.currcnt = 0;
         self.txtransactioncnt = 0;
     }
 
-
-
-    pub fn process_messages(
-        &mut self,
-        buffers: EthRingBuffers,
-        usbtxring: &mut ConcurrentQueue<Usbtransaciton>,
-        usbrxring: &mut ConcurrentQueue<Usbtransaciton>,
-    ) {
-        let (rxq, txq) = buffers;
+    pub fn process_messages(&mut self, eth_buffers: EthRingBuffers, usb_buffers: UsbRingBuffers) {
+        let (rxq, txq) = eth_buffers;
+        let (usbrxring, usbtxring) = usb_buffers;
 
         //TX HANDLING
         match self.txstate {
@@ -285,13 +262,12 @@ impl NcmApiManager{
             IpTxState::Sending => {
                 // we can only send chunks of 64 bytes, so we will incrementally walk the buffer;
                 let mut msg: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
-                let bytestocopy = (self.usbmsgtotlen -self.txtransactioncnt).min(EP_DATA_BUF_SIZE);
+                let bytestocopy = (self.usbmsgtotlen - self.txtransactioncnt).min(EP_DATA_BUF_SIZE);
                 msg[0..bytestocopy].clone_from_slice(
-                    &self.ncmmsgtxbuf
-                        [self.txtransactioncnt..self.txtransactioncnt + bytestocopy],
+                    &self.ncmmsgtxbuf[self.txtransactioncnt..self.txtransactioncnt + bytestocopy],
                 );
-                
-                if let Ok(()) = usbtxring.push((bytestocopy,msg)) {
+
+                if let Ok(()) = usbtxring.push((bytestocopy, msg)) {
                     debug!("sent {} bytes", bytestocopy);
                     self.txtransactioncnt += bytestocopy;
                     //part of message sucesfully sent.
@@ -303,7 +279,7 @@ impl NcmApiManager{
                         self.txdatagram.datagrams.clear(); // TODO: this is stopping us from sending more than 1 dgram
                         self.txstate = IpTxState::Ready;
                         self.txtransactioncnt = 0;
-                    } 
+                    }
                 } else {
                     warn!("usb tx ring is full, waiting.");
                 }
@@ -311,7 +287,7 @@ impl NcmApiManager{
         };
 
         // RX HANDLING
-        let (size,usbbuf) = match usbrxring.is_empty() {
+        let (size, usbbuf) = match usbrxring.is_empty() {
             true => return,
             false => usbrxring.pop().unwrap(),
         };
@@ -320,7 +296,7 @@ impl NcmApiManager{
             IpRxState::AwaitHeader => {
                 if size < core::mem::size_of::<NCMTransferHeader>() {
                     warn!("got unaligned ncm msg");
-                    return //dont handle partial ncm headers
+                    return; //dont handle partial ncm headers
                 }
                 // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
                 self.currheader = match usbbuf[0..size].try_into().ok() {
@@ -366,14 +342,15 @@ impl NcmApiManager{
                             let idx_uz = dgram.index as usize;
                             let len_uz = dgram.length as usize;
                             let mut rxmsg: [u8; MTU] = [0u8; MTU];
-                            rxmsg[0..len_uz].copy_from_slice(&self.ncmmsgrxbuf[idx_uz..idx_uz + len_uz]);
-                            
-                            if let Err(x) =  rxq.push((len_uz, rxmsg)){
+                            rxmsg[0..len_uz]
+                                .copy_from_slice(&self.ncmmsgrxbuf[idx_uz..idx_uz + len_uz]);
+
+                            if let Err(x) = rxq.push((len_uz, rxmsg)) {
                                 match x {
                                     PushError::Full(_y) => warn!("rxq is full!"),
-                                    PushError::Closed(_y) => warn!("rxq is closed!")
+                                    PushError::Closed(_y) => warn!("rxq is closed!"),
                                 }
-                            }; 
+                            };
                         }
                         _ => panic!("Somehow we received a packet that is too big."),
                     }
@@ -382,19 +359,4 @@ impl NcmApiManager{
             }
         }
     }
-
-
-
-
-
-
-
-
-
 }
-
-
-
-
-
-

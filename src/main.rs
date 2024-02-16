@@ -3,8 +3,6 @@
 use core::cell::RefCell;
 
 //runtime
-use concurrent_queue::ConcurrentQueue;
-
 use cortex_m_rt::entry;
 use cortex_m_rt::exception;
 use critical_section::{with, Mutex};
@@ -15,8 +13,6 @@ use panic_probe as _;
 use stm32_hal2::access_global;
 use stm32_hal2::make_globals;
 use stm32_hal2::pac::TIM1;
-use usb_device::class_prelude::UsbBusAllocator;
-use usbipserver::Usbtransaciton;
 // hal
 use cortex_m::peripheral::NVIC;
 use stm32_hal2::{
@@ -30,9 +26,6 @@ use stm32_hal2::{
 
 //app
 mod cdc_ncm;
-
-mod intf;
-
 mod ncm_api;
 use ncm_api::NcmApiManager;
 
@@ -42,6 +35,7 @@ use server::TcpServer;
 mod ncm_netif;
 
 mod usbipserver;
+use usb_device::class_prelude::UsbBusAllocator;
 use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
@@ -95,17 +89,15 @@ impl RgbControl {
     }
 }
 
-make_globals!(
-    (USBTXRING, ConcurrentQueue::<Usbtransaciton>),
-    (USBRXRING, ConcurrentQueue::<Usbtransaciton>),
-    (USBIP, UsbIpManager<UsbBus<Peripheral>>),
-);
+make_globals!((USBCON, UsbIpManager<'_, UsbBus<Peripheral>>));
 
 static mut USB_BUS: Option<UsbBusAllocator<UsbBus<Peripheral>>> = None;
 
 struct ProjectPeriphs {
+    arm: cortex_m::Peripherals,
     // sanity_led : LedPin,
-    rgb: RgbControl,
+    // rgb: RgbControl,
+    led: Pin,
     usb: Peripheral,
 }
 impl ProjectPeriphs {
@@ -133,27 +125,30 @@ impl ProjectPeriphs {
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
 
-        unsafe {
-            NVIC::unmask(interrupt::USB_FS);
-            arm.NVIC.set_priority(interrupt::USB_FS, 1);
-        }
+        // let pwm_timer = Timer::new_tim1(
+        //     dp.TIM1,
+        //     2_400.,
+        //     TimerConfig {
+        //         auto_reload_preload: true,
+        //         // Setting auto reload preload allow changing frequency (period) while the timer is running.
+        //         ..Default::default()
+        //     },
+        //     &clock_cfg,
+        // );
 
-        let pwm_timer = Timer::new_tim1(
-            dp.TIM1,
-            2_400.,
-            TimerConfig {
-                auto_reload_preload: true,
-                // Setting auto reload preload allow changing frequency (period) while the timer is running.
-                ..Default::default()
-            },
-            &clock_cfg,
-        );
-
-        let rgb = RgbControl::new(pwm_timer);
+        // let rgb = RgbControl::new(pwm_timer);
         let usb = Peripheral { regs: dp.USB };
         let _rng = Rng::new(dp.RNG);
-
-        ProjectPeriphs { usb, rgb }
+        let mut led = Pin::new(Port::A, 8, PinMode::Output);
+        led.output_speed(stm32_hal2::gpio::OutputSpeed::Low);
+        // ProjectPeriphs {arm, usb, rgb }
+        ProjectPeriphs { arm, usb, led }
+    }
+    fn enable_irqs(&mut self) {
+        unsafe {
+            NVIC::unmask(interrupt::USB_FS);
+            self.arm.NVIC.set_priority(interrupt::USB_FS, 1);
+        }
     }
 }
 
@@ -181,7 +176,7 @@ fn main() -> ! {
 
     info!("starting server...");
     let mut tcpserv = TcpServer::init_server(rng::read() as u32);
-    periphs.rgb.active_all_pwms();
+    // periphs.rgb.active_all_pwms();
     // periphs.rgb.set_duty(RgbLed::Red, 20);
     // periphs.rgb.set_duty(RgbLed::Green, 0);
     // periphs.rgb.set_duty(RgbLed::Blue, 0);
@@ -190,39 +185,33 @@ fn main() -> ! {
     let mut lastlooptime = 0;
 
     //move the global variables to the critical seciton
-    with(|cs| {
-        USBTXRING
-            .borrow(cs)
-            .replace(Some(ConcurrentQueue::<Usbtransaciton>::bounded(8)));
-        USBRXRING
-            .borrow(cs)
-            .replace(Some(ConcurrentQueue::<Usbtransaciton>::bounded(4)));
-        unsafe {
-            let usbipmanager = UsbIpManager::new(USB_BUS.as_ref().unwrap());
-            USBIP.borrow(cs).replace(Some(usbipmanager));
-        }
+    with(|cs| unsafe {
+        let usbipmanager = UsbIpManager::new(USB_BUS.as_ref().unwrap());
+        USBCON.borrow(cs).replace(Some(usbipmanager));
     });
-
+    unsafe {
+        NVIC::unmask(interrupt::USB_FS);
+        periphs.arm.NVIC.set_priority(interrupt::USB_FS, 1);
+    }
     loop {
         let looptime = get_counter();
-
         with(|cs| {
-            access_global!(USBTXRING, usbtxring, cs);
-            access_global!(USBRXRING, usbrxring, cs);
-
-            ncmapi.process_messages(tcpserv.get_bufs(), usbtxring, usbrxring);
+            access_global!(USBCON, usbcon, cs);
+            ncmapi.process_messages(tcpserv.get_bufs(), usbcon.get_bufs());
         });
 
         tcpserv.eth_task(looptime);
-        lastlooptime = finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
+        lastlooptime =
+            finalize_perfcounter(&mut perfcounter, looptime, lastlooptime, &mut periphs.led);
         perfcounter += 1;
     }
 }
 
-fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {
+fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &mut Pin) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        // info!("seconds:{} loops: {}", looptime / 1000, cnt);
+        info!("seconds:{} loops: {}", looptime / 1000, cnt);
         *cnt = 0;
+        led.toggle();
         looptime
     } else {
         lastlooptime
@@ -233,12 +222,9 @@ fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 
 /// Interrupt handler for USB (serial)
 fn USB_FS() {
     with(|cs| {
-        access_global!(USBIP, usbip, cs);
-        access_global!(USBTXRING, usbtxring, cs);
-        access_global!(USBRXRING, usbrxring, cs);
-
-        usbip.run_loop((usbtxring, usbrxring));
-    });
+        access_global!(USBCON, usbipmanager, cs);
+        usbipmanager.run_loop();
+    })
 }
 
 #[defmt::panic_handler]

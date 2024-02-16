@@ -7,14 +7,14 @@ extern crate alloc;
 
 use defmt::debug;
 
+use defmt::info;
 use defmt::warn;
 //cdc_ncm
 //an implmentation of the mcm mode for cdc
 use num_enum::TryFromPrimitive;
 // use serde::Serialize;
+use core::array::TryFromSliceError;
 use usb_device::class_prelude::*;
-use usb_device::Result;
-
 /// This should be used as `device_class` when building the `UsbDevice`.
 
 //FIXME: a lot of these can be tkaen from original usb_acm rather than redefing..
@@ -38,8 +38,6 @@ pub const NCM_MAX_SEGMENT_SIZE: u16 = 1514;
 pub const NCM_MAX_IN_SIZE: usize = 2048;
 pub const NCM_MAX_OUT_SIZE: usize = 2048;
 
-
-
 pub const EP_DATA_BUF_SIZE: usize = 64;
 
 #[derive(Debug, defmt::Format, TryFromPrimitive)]
@@ -60,7 +58,6 @@ pub struct CdcNcmClass<'a, B: UsbBus> {
     namestr: StringIndex,
     macaddrstr: StringIndex,
 }
-
 
 #[repr(C, packed)]
 #[derive(Default)]
@@ -90,17 +87,104 @@ const PARAMS: NCMParameters = NCMParameters {
     ntb_out_maxsize: NCM_MAX_OUT_SIZE as u32,
     ndp_out_divisor: 4,
     ndp_out_alignment: 4,
-    ndp_out_payload_remainder: 4,
-    ntb_out_max_datagrams: 4, //FIXME: change back to 20 once multiple datagrams are supported
+    ndp_out_payload_remainder: 0,
+    ntb_out_max_datagrams: 20,
     reserved: 0,
 };
 
+#[derive(Clone, Copy)]
+struct CdcSpeedChangeBody {
+    bitrate_dl: u32,
+    bitrate_ul: u32,
+}
 
+#[derive(Clone, Copy)]
+struct NotifyHeader {
+    requestype: u8,
+    notificationtype: u8,
+    value: u16,
+    index: u16,
+    length: u16,
+}
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CdcSpeedChangeMsg {
+    header: NotifyHeader,
+    body: CdcSpeedChangeBody,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CdcConnectionNotifyMsg {
+    header: NotifyHeader,
+}
+
+impl Default for CdcSpeedChangeMsg {
+    fn default() -> Self {
+        CdcSpeedChangeMsg {
+            header: NotifyHeader {
+                requestype: 0xA1,
+                notificationtype: 0x2A,
+                value: 1,
+                index: 1,
+                length: size_of::<CdcSpeedChangeBody>() as u16,
+            },
+            body: CdcSpeedChangeBody {
+                bitrate_dl: 10 * 1000000,
+                bitrate_ul: 10 * 1000000,
+            },
+        }
+    }
+}
+
+impl TryInto<[u8; size_of::<CdcSpeedChangeMsg>()]> for CdcSpeedChangeMsg {
+    type Error = TryFromSliceError;
+    fn try_into(self) -> Result<[u8; size_of::<CdcSpeedChangeMsg>()], Self::Error> {
+        const ARRLEN: usize = size_of::<CdcSpeedChangeMsg>();
+        let mut arr: [u8; ARRLEN] = [0; ARRLEN];
+        arr[0] = self.header.requestype;
+        arr[1] = self.header.notificationtype;
+        arr[2..4].copy_from_slice(&self.header.value.to_le_bytes());
+        arr[4..6].copy_from_slice(&self.header.index.to_le_bytes());
+        arr[6..8].copy_from_slice(&self.header.length.to_le_bytes());
+        arr[8..12].copy_from_slice(&self.body.bitrate_dl.to_le_bytes());
+        arr[12..16].copy_from_slice(&self.body.bitrate_ul.to_le_bytes());
+        Ok(arr)
+    }
+}
+
+impl Default for CdcConnectionNotifyMsg {
+    fn default() -> Self {
+        CdcConnectionNotifyMsg {
+            header: NotifyHeader {
+                requestype: 0xA1,
+                notificationtype: 0x00,
+                value: 1,
+                index: 1,
+                length: 0,
+            },
+        }
+    }
+}
+
+impl TryInto<[u8; size_of::<CdcConnectionNotifyMsg>()]> for CdcConnectionNotifyMsg {
+    type Error = TryFromSliceError;
+    fn try_into(self) -> Result<[u8; size_of::<CdcConnectionNotifyMsg>()], Self::Error> {
+        const ARRLEN: usize = size_of::<CdcConnectionNotifyMsg>();
+        let mut arr: [u8; ARRLEN] = [0; ARRLEN];
+        arr[0] = self.header.requestype;
+        arr[1] = self.header.notificationtype;
+        arr[2..4].copy_from_slice(&self.header.value.to_le_bytes());
+        arr[4..6].copy_from_slice(&self.header.index.to_le_bytes());
+        arr[6..8].copy_from_slice(&self.header.length.to_le_bytes());
+        Ok(arr)
+    }
+}
 
 impl<B: UsbBus> CdcNcmClass<'_, B> {
     /// Creates a new CdcAcmClass with the provided UsbBus and max_packet_size in bytes. For
-    pub fn new(alloc: &'_ UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
+    pub fn new(alloc: &UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
         CdcNcmClass {
             comm_if: alloc.interface(),
             ned_ep: alloc.interrupt(32, 20),
@@ -113,16 +197,16 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
     }
 
     /// Writes a single packet into the IN endpoint.
-    pub fn write_packet(&mut self, data: &[u8]) -> Result<usize> {
+    pub fn write_packet(&mut self, data: &[u8]) -> Result<usize, UsbError> {
         self.write_ep.write(data)
     }
 
     /// Reads a single packet from the OUT endpoint.
-    pub fn read_packet(&mut self, data: &mut [u8]) -> Result<usize> {
+    pub fn read_packet(&mut self, data: &mut [u8]) -> Result<usize, UsbError> {
         self.read_ep.read(data)
     }
 
-    pub fn send_notification(&mut self, data: &[u8]) -> Result<usize> {
+    pub fn send_notification(&mut self, data: &[u8]) -> Result<usize, UsbError> {
         self.ned_ep.write(data)
     }
 }
@@ -136,7 +220,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
         }
     }
 
-    fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> Result<()> {
+    fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> Result<(), UsbError> {
         /* Interface Association Descriptor */
         writer.iad(
             self.comm_if,
@@ -144,7 +228,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             USB_CLASS_CDC,
             CDC_SUBCLASS_NCM,
             CDC_PROTOCOL_NONE,
-            None
+            None,
         )?;
 
         /* Comm Interface Descriptor */
@@ -176,14 +260,14 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             CS_INTERFACE,
             &[
                 ETH_NET_FUNC_DESC,
-                self.macaddrstr.into(),                     //imacaddress
-                0x0,                                        //eth stats
-                0x0,                                        //eth stats
-                0x0,                                        //eth stats
-                0x0,                                        //eth stats
-                (NCM_MAX_SEGMENT_SIZE & 0x00ff) as u8, //max segment size
+                self.macaddrstr.into(),                       //imacaddress
+                0x0,                                          //eth stats
+                0x0,                                          //eth stats
+                0x0,                                          //eth stats
+                0x0,                                          //eth stats
+                (NCM_MAX_SEGMENT_SIZE & 0x00ff) as u8,        //max segment size
                 ((NCM_MAX_SEGMENT_SIZE & 0xff00) >> 8) as u8, //max segment size
-                0x0,                                        //mc filters?
+                0x0,                                          //mc filters?
                 0x0,
                 0x0, //power filters..?
             ],
@@ -220,14 +304,20 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
 
     fn control_out(&mut self, xfer: ControlOut<B>) {
         let req = xfer.request();
-        let _data = xfer.data();
+        let data = xfer.data();
 
         if req.request_type == control::RequestType::Class {
             debug!("set request {:08x}", req.request);
-            if let Ok(_request) = CDCRequests::try_from_primitive(req.request) {
+
+            if let Ok(request) = CDCRequests::try_from_primitive(req.request) {
+                match request {
+                    CDCRequests::SetNTBInputSize => {
+                        let ntbsize: u32 = u32::from_le_bytes(data[0..3].try_into().unwrap());
+                        info!("computer requested NTBsize of {}", ntbsize);
+                    }
+                    _ => xfer.reject().ok().unwrap(),
+                }
                 // gracefully accept the transfer and skip for now.
-                debug!("handled request {:08x}", _request);
-                xfer.accept().ok();
             } else {
                 warn!("uhandled out request {:08x}", req.request);
                 xfer.reject().ok();
