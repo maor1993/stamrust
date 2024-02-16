@@ -1,56 +1,30 @@
 {
-    /* 
-     * Requires the Rust Language Server (rust-analyzer) and Cortex-Debug extensions
-     * https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer
-     * https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug
-     */
-    "version": "0.2.0",
-    "configurations": [
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "name": "Debug probers",
+      "chip": "STM32L412KBU6",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "copy to pi",
+      "flashingConfig": {
+        "flashingEnabled": true,
+        "haltAfterReset": true,
+      },
+      "server": "192.168.1.44:50000",
+      "coreConfigs": [
         {
-            /* Configuration for the STM32F303 Discovery board */
-            "type": "cortex-debug",
-            "request": "launch",
-            "name": "Debug (OpenOCD)",
-            "servertype": "openocd",
-            "cwd": "${workspaceRoot}",
-            "preLaunchTask": "Cargo Build (debug)",
-            "executable": "target/thumbv7em-none-eabi/debug/stamrust",
-            "device": "STM32L412KBU6",
-            "configFiles": [
-                "openocd.cfg"
-            ],
-            "svdFile": "${workspaceRoot}/.vscode/STM32L4x2.svd",
-            "rttConfig": {
-                "enabled": true,
-                "address": "auto",
-                "decoders": [
-                    {
-                        "label": "port0",
-                        "port": 0,
-                        "type": "console",
-                    }
-                ]
-            },
-        },
-        {
-            /* Configuration for the STM32F303 Discovery board */
-            "type": "cortex-debug",
-            "request": "launch",
-            "name": "Debug on raspberry pi",
-            "servertype": "external",
-            "cwd": "${workspaceRoot}",
-            "preLaunchTask": "Cargo Build (debug)",
-            "executable": "target/thumbv7em-none-eabi/debug/stamrust",
-            "gdbTarget": "192.168.1.44:3333",
-            "device": "STM32L412KBU6",
-            "svdFile": "${workspaceRoot}/.vscode/STM32L4x2.svd",
-            "postLaunchCommands": [
-                "monitor rtt server start 8765 0",
-                // should span the *right* part of RAM
-                "monitor rtt setup 0x20000448 0x30 \"SEGGER RTT\"",
-                "monitor rtt start",    
-            ],
+          "coreIndex": 0,
+          "rttEnabled": true,
+          "programBinary": "/tmp/stamrust",
+          "svdFile": "/tmp/STM32L4x2.svd"
         }
-    ],
-
+      ],
+      "env": {
+        "DEFMT_LOG": "info"
+      },
+      "consoleLogLevel": "Console"
+    }
+  ]
 }

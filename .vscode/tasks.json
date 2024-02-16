@@ -42,6 +42,12 @@
             "label": "burn via dfu",
             "type": "process",
             "command": "dfu-util"
+        },
+        {
+            "label": "copy to pi",
+            "type": "shell",
+            "command": "scp ${workspaceFolder}/target/thumbv7em-none-eabi/debug/stamrust maorm@debugpi.local:/tmp",
+            "dependsOn":"Cargo Build (debug)"
         }
     ],
     "inputs": [
