@@ -1,5 +1,5 @@
 use core::mem::size_of;
-use defmt::{debug, warn};
+use defmt::{debug, info, warn};
 use usb_device::class_prelude::{UsbBus, UsbBusAllocator};
 use usb_device::prelude::*;
 
@@ -33,8 +33,8 @@ pub struct UsbIpManager<'a, B: UsbBus> {
 
 impl<'a, B: UsbBus> UsbIpManager<'a, B> {
     pub fn new(usb_alloc: &'a UsbBusAllocator<B>) -> UsbIpManager<'a, B> {
-        let ncm_dev = CdcNcmClass::new(&usb_alloc);
-        let usb_dev = UsbDeviceBuilder::new(&usb_alloc, UsbVidPid(0x0483, 0xffff))
+        let ncm_dev = CdcNcmClass::new(usb_alloc);
+        let usb_dev = UsbDeviceBuilder::new(usb_alloc, UsbVidPid(0x0483, 0xffff))
             .strings(&[StringDescriptors::new(LangID::EN_US)
                 .manufacturer("STMicroelectronics")
                 .product("IP over USB Demonstrator")
@@ -81,22 +81,21 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
     }
 
     pub fn run_loop(&mut self) {
-        if self.usb_dev.poll(&mut [&mut self.ncm_dev]) {
-            match self.bootstate {
-                UsbIpBootState::Speed => {
-                    if self.send_speed_notificaiton().is_ok() {
-                        self.bootstate = UsbIpBootState::Notify
-                    }
+        self.usb_dev.poll(&mut [&mut self.ncm_dev]);
+        match self.bootstate {
+            UsbIpBootState::Speed => {
+                if self.send_speed_notificaiton().is_ok() {
+                    self.bootstate = UsbIpBootState::Notify
                 }
-                UsbIpBootState::Notify => {
-                    if self.send_connection_notificaiton().is_ok() {
-                        self.bootstate = UsbIpBootState::Normal;
-                        debug!("Sent notify!");
-                    }
+            }
+            UsbIpBootState::Notify => {
+                if self.send_connection_notificaiton().is_ok() {
+                    self.bootstate = UsbIpBootState::Normal;
+                    debug!("Sent notify!");
                 }
-                UsbIpBootState::Normal => {
-                    self.process_usb();
-                }
+            }
+            UsbIpBootState::Normal => {
+                self.process_usb();
             }
         }
     }

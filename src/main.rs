@@ -40,6 +40,10 @@ use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
 
+defmt::timestamp!("{=u32}",{
+   get_counter() 
+});
+
 fn increase_counter() {
     with(|cs| {
         *TICKS.borrow(cs).borrow_mut() += 1;
@@ -209,7 +213,7 @@ fn main() -> ! {
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &mut Pin) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        info!("seconds:{} loops: {}", looptime / 1000, cnt);
+        // info!("seconds:{} loops: {}", looptime / 1000, cnt);
         *cnt = 0;
         led.toggle();
         looptime

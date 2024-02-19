@@ -24,7 +24,7 @@ num_enum = {version = "0.5.11", default-features = false}
 usbd-serial = "0.1.1"
 concurrent-queue = {version="2.4.0", default-features = false}
 # tcpip
-smoltcp = { version = "0.10.0", default-features = false, features = ["medium-ethernet","socket-dhcpv4","socket-icmp","socket-udp","socket-tcp","proto-ipv4","proto-ipv4-fragmentation","alloc","defmt"] }
+smoltcp = { version = "0.11.0", default-features = false, features = ["medium-ethernet","socket-dhcpv4","socket-icmp","socket-udp","socket-tcp","proto-ipv4","proto-ipv4-fragmentation","alloc","defmt"] }
 
 
 

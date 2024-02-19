@@ -28,7 +28,7 @@ impl<'a> TcpServer<'a> {
     pub fn init_server(seed: u32) -> Self {
         // Create interface
         let mut device = StmPhy::new();
-        let mut config = Config::new(EthernetAddress([0x00, 0x80, 0xE1, 0x00, 0x00, 0x00]).into());
+        let mut config = Config::new(EthernetAddress([0x00, 0x80, 0xE1, 0x00, 0x00, 0x01]).into());
         config.random_seed = seed as u64;
         let mut iface = Interface::new(config, &mut device, Instant::from_millis(0));
         iface.update_ip_addrs(|ip_addrs| {
