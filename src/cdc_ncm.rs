@@ -88,7 +88,7 @@ const PARAMS: NCMParameters = NCMParameters {
     ndp_out_divisor: 4,
     ndp_out_alignment: 4,
     ndp_out_payload_remainder: 0,
-    ntb_out_max_datagrams: 20,
+    ntb_out_max_datagrams: 1,
     reserved: 0,
 };
 
@@ -187,10 +187,10 @@ impl<B: UsbBus> CdcNcmClass<'_, B> {
     pub fn new(alloc: &UsbBusAllocator<B>) -> CdcNcmClass<'_, B> {
         CdcNcmClass {
             comm_if: alloc.interface(),
-            ned_ep: alloc.interrupt(32, 20),
+            ned_ep: alloc.interrupt(32, 255),
             data_if: alloc.interface(),
-            read_ep: alloc.bulk(EP_DATA_BUF_SIZE as u16),
-            write_ep: alloc.bulk(EP_DATA_BUF_SIZE as u16),
+            read_ep: alloc.alloc(None, EndpointType::Bulk, EP_DATA_BUF_SIZE as u16, 1).unwrap(),
+            write_ep: alloc.alloc(None, EndpointType::Bulk, EP_DATA_BUF_SIZE as u16, 1).unwrap(),
             namestr: alloc.string(),
             macaddrstr: alloc.string(),
         }
@@ -279,7 +279,7 @@ impl<B: UsbBus> UsbClass<B> for CdcNcmClass<'_, B> {
             &[
                 0x1A, //ncm func desc
                 0x00, 0x01, //ncm version
-                0x01, //network capabilites
+                0x00, //network capabilites
             ],
         )?;
 

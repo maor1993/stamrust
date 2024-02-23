@@ -238,7 +238,7 @@ impl NcmApiManager {
             IpTxState::Ready => {
                 //we only need to copy the buffer
                 if let Ok((msg_len, msg)) = txq.pop() {
-                    // info!("sending {:02x}",msg[0..msg_len]);
+                    debug!("sending {:02x}", msg[0..msg_len]);
                     //create a new datagram table entry for this message
                     self.currtxdatalen = msg_len;
                     self.txdatagram.datagrams.push(NCMDatagram16 {
@@ -279,9 +279,13 @@ impl NcmApiManager {
                 let mut msg: [u8; EP_DATA_BUF_SIZE] = [0u8; EP_DATA_BUF_SIZE];
                 msg[0..TOTAL_HEADER_SIZE].clone_from_slice(&self.ncmmsgtxbuf[0..TOTAL_HEADER_SIZE]);
                 if let Ok(()) = usbtxring.push((TOTAL_HEADER_SIZE, msg)) {
-                    self.txtransactioncnt += TOTAL_HEADER_SIZE;
-                    self.txstate = IpTxState::Sending;
-                    info!("sent header!");
+                    if self.usbmsgtotlen == TOTAL_HEADER_SIZE {
+                        self.txstate = IpTxState::Ready;
+                    } else {
+                        self.txtransactioncnt += TOTAL_HEADER_SIZE;
+                        self.txstate = IpTxState::Sending;
+                        debug!("sent header!");
+                    }
                 }
             }
             IpTxState::Sending => {
@@ -311,21 +315,21 @@ impl NcmApiManager {
             IpTxState::Zlp => {
                 if (self.currtxdatalen % EP_DATA_BUF_SIZE) == 0 {
                     if let Ok(()) = usbtxring.push((0, [0u8; 64])) {
-                        self.txdatagram.datagrams.clear(); // TODO: this is stopping us from sending more than 1 dgram
+                        self.txdatagram.datagrams.clear();
                         self.txstate = IpTxState::Ready;
                         self.txtransactioncnt = 0;
                         info!("sent zlp!");
                     } else {
-                        // warn!("usb tx ring is full, waiting.");
+                        warn!("usb tx ring is full, waiting.");
                     }
                 } else {
-                    self.txdatagram.datagrams.clear(); // TODO: this is stopping us from sending more than 1 dgram
+                    self.txdatagram.datagrams.clear(); 
                     self.txstate = IpTxState::Ready;
                     self.txtransactioncnt = 0;
                 }
             }
         };
-
+    
         // RX HANDLING
         for (size, usbbuf) in usbrxring.try_iter() {
             match self.rxstate {
@@ -333,12 +337,12 @@ impl NcmApiManager {
                     if size < core::mem::size_of::<NCMTransferHeader>() {
                         warn!("got unaligned ncm msg");
                         info!("unaligned msg {:02x}", usbbuf[0..size]);
-                        return; //dont handle partial ncm headers
+                        continue; //dont handle partial ncm headers
                     }
                     // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
                     self.currheader = match usbbuf[0..size].try_into().ok() {
                         Some(x) => x,
-                        None => return,
+                        None => continue,
                     };
                     // info!("rx seq: {}",self.currheader.sequence);
 
@@ -369,22 +373,22 @@ impl NcmApiManager {
             }
         }
 
-        //TODO: move
         if self.rxbufready {
             self.process_ndp();
             const MAXSIZE: u16 = NCM_MAX_IN_SIZE as u16;
             debug!("processing {} datagrams", self.currndp.datagrams.len());
-            self.currndp.datagrams.iter().for_each(|dgram| {
-                match dgram.length {
+            self.currndp
+                .datagrams
+                .iter()
+                .for_each(|dgram| match dgram.length {
                     0 => (),
                     1..=MAXSIZE => {
-                        //since we know currently that only 1 dgram is support, we'll copy it directly
                         let idx_uz = dgram.index as usize;
                         let len_uz = dgram.length as usize;
                         let mut rxmsg: [u8; MTU] = [0u8; MTU];
                         rxmsg[0..len_uz]
                             .copy_from_slice(&self.ncmmsgrxbuf[idx_uz..idx_uz + len_uz]);
-                        info!("incoming {:02x}", rxmsg[0..len_uz]);
+                        debug!("incoming {:02x}", rxmsg[0..len_uz]);
                         if let Err(x) = rxq.push((len_uz, rxmsg)) {
                             match x {
                                 PushError::Full(_y) => warn!("rxq is full!"),
@@ -393,8 +397,7 @@ impl NcmApiManager {
                         };
                     }
                     _ => panic!("Somehow we received a packet that is too big."),
-                }
-            });
+                });
             self.rxbufready = false;
         }
     }

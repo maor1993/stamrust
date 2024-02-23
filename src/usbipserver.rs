@@ -42,6 +42,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
             .expect("failed to create strings")
             .device_class(USB_CLASS_CDC)
             .device_sub_class(CDC_SUBCLASS_NCM)
+            .composite_with_iads()
             .build();
 
         UsbIpManager {
@@ -81,7 +82,7 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
     }
 
     pub fn run_loop(&mut self) {
-        self.usb_dev.poll(&mut [&mut self.ncm_dev]);
+        self.poll_usb();
         match self.bootstate {
             UsbIpBootState::Speed => {
                 if self.send_speed_notificaiton().is_ok() {
@@ -98,6 +99,9 @@ impl<'a, B: UsbBus> UsbIpManager<'a, B> {
                 self.process_usb();
             }
         }
+    }
+    fn poll_usb(&mut self) -> bool{
+        self.usb_dev.poll(&mut [&mut self.ncm_dev])
     }
 
     pub fn get_bufs(&mut self) -> UsbRingBuffers {

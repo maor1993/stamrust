@@ -1,4 +1,5 @@
 
+use defmt::error;
 use smoltcp::phy::{self, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 use smoltcp::wire::IPV4_MIN_MTU;
@@ -79,7 +80,9 @@ impl<'a> phy::TxToken for StmPhyTxToken<'a> {
     {
         let mut output = [0u8;MTU];
         let result = f(&mut output[0..len]);
-        self.0.push((len,output)).unwrap();
+        if let Err(_x) =self.0.push((len,output)) {
+            error!("overloaded ethernet tx buf, dropped packet!");
+        }
         //update buffer with new pending packet
         result
     }

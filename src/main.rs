@@ -103,20 +103,21 @@ struct ProjectPeriphs {
     // rgb: RgbControl,
     led: Pin,
     usb: Peripheral,
+    clk_cfg: Clocks,
 }
 impl ProjectPeriphs {
     fn new() -> Self {
         let dp = pac::Peripherals::take().unwrap();
         let mut arm = cortex_m::Peripherals::take().unwrap();
 
-        let clock_cfg = Clocks {
+        let clk_cfg = Clocks {
             // Enable the HSI48 oscillator, so we don't need an external oscillator, and
             // aren't restricted in our PLL config.
             hsi48_on: true,
             clk48_src: Clk48Src::Hsi48,
             ..Default::default()
         };
-        clock_cfg.setup().unwrap();
+        clk_cfg.setup().unwrap();
         clocks::enable_crs(CrsSyncSrc::Usb);
 
         dp.RCC.apb1enr1.modify(|_, w| w.pwren().set_bit());
@@ -125,7 +126,7 @@ impl ProjectPeriphs {
         let _usb_dm = Pin::new(Port::A, 11, PinMode::Alt(14));
         let _usb_dp = Pin::new(Port::A, 12, PinMode::Alt(14));
 
-        arm.SYST.set_reload((clock_cfg.systick() / 8_000) - 1);
+        arm.SYST.set_reload((clk_cfg.systick() / 8_000) - 1);
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
 
@@ -146,12 +147,13 @@ impl ProjectPeriphs {
         let mut led = Pin::new(Port::A, 8, PinMode::Output);
         led.output_speed(stm32_hal2::gpio::OutputSpeed::Low);
         // ProjectPeriphs {arm, usb, rgb }
-        ProjectPeriphs { arm, usb, led }
+        ProjectPeriphs { arm, usb, led ,clk_cfg}
     }
     fn enable_irqs(&mut self) {
         unsafe {
             NVIC::unmask(interrupt::USB_FS);
             self.arm.NVIC.set_priority(interrupt::USB_FS, 1);
+            
         }
     }
 }
@@ -193,17 +195,19 @@ fn main() -> ! {
         let usbipmanager = UsbIpManager::new(USB_BUS.as_ref().unwrap());
         USBCON.borrow(cs).replace(Some(usbipmanager));
     });
-    unsafe {
-        NVIC::unmask(interrupt::USB_FS);
-        periphs.arm.NVIC.set_priority(interrupt::USB_FS, 1);
-    }
+    
+    // unsafe {
+    //     NVIC::unmask(interrupt::USB_FS);
+    //     periphs.arm.NVIC.set_priority(interrupt::USB_FS, 1);
+    // }
+    // let mut delay = Delay::new(periphs.arm.SYST, periphs.clk_cfg.systick());
     loop {
         let looptime = get_counter();
         with(|cs| {
             access_global!(USBCON, usbcon, cs);
+            usbcon.run_loop();
             ncmapi.process_messages(tcpserv.get_bufs(), usbcon.get_bufs());
         });
-
         tcpserv.eth_task(looptime);
         lastlooptime =
             finalize_perfcounter(&mut perfcounter, looptime, lastlooptime, &mut periphs.led);
@@ -213,7 +217,7 @@ fn main() -> ! {
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &mut Pin) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        // info!("seconds:{} loops: {}", looptime / 1000, cnt);
+        info!("seconds:{} loops: {}", looptime / 1000, cnt);
         *cnt = 0;
         led.toggle();
         looptime
@@ -222,14 +226,14 @@ fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &m
     }
 }
 
-#[interrupt]
-/// Interrupt handler for USB (serial)
-fn USB_FS() {
-    with(|cs| {
-        access_global!(USBCON, usbipmanager, cs);
-        usbipmanager.run_loop();
-    })
-}
+// #[interrupt]
+// /// Interrupt handler for USB (serial)
+// fn USB_FS() {
+//     with(|cs| {
+//         access_global!(USBCON, usbipmanager, cs);
+//         usbipmanager.run_loop();
+//     })
+// }
 
 #[defmt::panic_handler]
 fn panic() -> ! {
