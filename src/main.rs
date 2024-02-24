@@ -85,7 +85,7 @@ impl RgbControl {
     fn new(rgb: Timer<TIM1>) -> Self {
         RgbControl { rgb }
     }
-    fn set_duty(&mut self, led: RgbLed, duty: u16) {
+    fn set_duty(&mut self, led: RgbLed, duty: u8) {
         let max_duty = self.rgb.get_max_duty();
 
         let channel = match led {
@@ -93,17 +93,23 @@ impl RgbControl {
             RgbLed::Green => TimChannel::C2,
             RgbLed::Blue => TimChannel::C3,
         };
-
-        self.rgb.set_duty(channel, max_duty * duty / 100);
+        self.rgb.set_duty(channel, (max_duty / u8::MAX as u16) * duty as u16);
+    }
+    fn tim1_errata(&mut self){
+        let tim1 = unsafe { &(*TIM1::ptr()) };
+        tim1.bdtr.write(|w| w.moe().set_bit());
+        tim1.egr.write(|w| w.ug().set_bit());
     }
 
     fn active_all_pwms(&mut self) {
         self.rgb
-            .enable_pwm_output(TimChannel::C1, OutputCompare::Pwm1, 0.0);
+            .enable_pwm_output(TimChannel::C1, OutputCompare::Pwm1, 1.0);
         self.rgb
-            .enable_pwm_output(TimChannel::C2, OutputCompare::Pwm1, 0.0);
+            .enable_pwm_output(TimChannel::C2, OutputCompare::Pwm1, 1.0);
         self.rgb
-            .enable_pwm_output(TimChannel::C3, OutputCompare::Pwm1, 0.0);
+            .enable_pwm_output(TimChannel::C3, OutputCompare::Pwm1, 1.0);
+        self.rgb.enable();
+        self.tim1_errata();
     }
 }
 
@@ -113,8 +119,8 @@ static mut USB_BUS: Option<UsbBusAllocator<UsbBus<Peripheral>>> = None;
 
 struct ProjectPeriphs {
     arm: cortex_m::Peripherals,
-    // rgb: RgbControl,
-    led: Pin,
+    rgb: RgbControl,
+    // led: Pin,
     usb: Peripheral,
     clk_cfg: Clocks,
 }
@@ -139,28 +145,33 @@ impl ProjectPeriphs {
         let _usb_dm = Pin::new(Port::A, 11, PinMode::Alt(14));
         let _usb_dp = Pin::new(Port::A, 12, PinMode::Alt(14));
 
+
+        let _rgb_r = Pin::new(Port::A,8,PinMode::Alt(1));
+        let _rgb_g = Pin::new(Port::A,9,PinMode::Alt(1));
+        let _rgb_b = Pin::new(Port::A,10,PinMode::Alt(1));
+
+
         arm.SYST.set_reload((clk_cfg.systick() / 8_000) - 1);
         arm.SYST.enable_counter();
         arm.SYST.enable_interrupt();
 
-        // let pwm_timer = Timer::new_tim1(
-        //     dp.TIM1,
-        //     2_400.,
-        //     TimerConfig {
-        //         auto_reload_preload: true,
-        //         // Setting auto reload preload allow changing frequency (period) while the timer is running.
-        //         ..Default::default()
-        //     },
-        //     &clock_cfg,
-        // );
+        let pwm_timer = Timer::new_tim1(
+            dp.TIM1,
+            10000.,
+            stm32_hal2::timer::TimerConfig {
+                auto_reload_preload: true,
+                // Setting auto reload preload allow changing frequency (period) while the timer is running.
+                ..Default::default()
+            },
+            &clk_cfg,
+        );
 
-        // let rgb = RgbControl::new(pwm_timer);
+        let rgb = RgbControl::new(pwm_timer);
         let usb = Peripheral { regs: dp.USB };
         let _rng = Rng::new(dp.RNG);
-        let mut led = Pin::new(Port::A, 8, PinMode::Output);
-        led.output_speed(stm32_hal2::gpio::OutputSpeed::Low);
+
         // ProjectPeriphs {arm, usb, rgb }
-        ProjectPeriphs { arm, usb, led ,clk_cfg}
+        ProjectPeriphs { arm, usb, rgb ,clk_cfg}
     }
     fn enable_irqs(&mut self) {
         unsafe {
@@ -195,10 +206,7 @@ fn main() -> ! {
 
     info!("starting server...");
     let mut tcpserv = TcpServer::init_server(rng::read() as u32);
-    // periphs.rgb.active_all_pwms();
-    // periphs.rgb.set_duty(RgbLed::Red, 20);
-    // periphs.rgb.set_duty(RgbLed::Green, 0);
-    // periphs.rgb.set_duty(RgbLed::Blue, 0);
+    periphs.rgb.active_all_pwms();
 
     let mut perfcounter = 0;
     let mut lastlooptime = 0;
@@ -209,11 +217,6 @@ fn main() -> ! {
         USBCON.borrow(cs).replace(Some(usbipmanager));
     });
     
-    // unsafe {
-    //     NVIC::unmask(interrupt::USB_FS);
-    //     periphs.arm.NVIC.set_priority(interrupt::USB_FS, 1);
-    // }
-    // let mut delay = Delay::new(periphs.arm.SYST, periphs.clk_cfg.systick());
     loop {
         let looptime = get_counter();
         with(|cs| {
@@ -223,17 +226,20 @@ fn main() -> ! {
         });
         tcpserv.eth_task(looptime);
         lastlooptime =
-            finalize_perfcounter(&mut perfcounter, looptime, lastlooptime, &mut periphs.led);
+            finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
         perfcounter += 1;
+        periphs.rgb.set_duty(RgbLed::Red, (lastlooptime%256) as u8);
+        periphs.rgb.set_duty(RgbLed::Green, (lastlooptime%256) as u8);
+        periphs.rgb.set_duty(RgbLed::Blue, (lastlooptime%256) as u8);
     }
 }
 
-fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &mut Pin) -> u32 {
+fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
         debug!("seconds:{} loops: {}", looptime / 1000, cnt);
         set_lps(*cnt);
         *cnt = 0;
-        led.toggle();
+        // led.toggle();
 
         looptime
     } else {
