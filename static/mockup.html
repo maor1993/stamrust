@@ -30,8 +30,8 @@
         } function updateColor() {
             var xhr = new XMLHttpRequest();
             xhr.open("POST", "rgb", true);
+            xhr.setRequestHeader("Content-Type", "application/data");
             var colorValue = document.getElementById("colorInput").value;
-            var rgb = hexToRgb(colorValue);
             xhr.send(colorValue);
         }
 

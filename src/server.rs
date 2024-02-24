@@ -1,8 +1,7 @@
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use defmt::warn;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
@@ -12,31 +11,38 @@ use smoltcp::time::Instant;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
+use crate::get_lps;
 use crate::ncm_netif::{EthRingBuffers, StmPhy};
 use defmt::info;
 
 use crate::http::{
-    gen_http_header, CallbackBt, HttpCallback, HttpContentType, HttpEncodingType, HttpRequest,
-    Httpserver, HTTP_404_RESPONSE,
+    gen_http_header, CallbackBt, HttpCallback, HttpContentType, HttpEncodingType, HttpError,
+    HttpRequest, Httpserver, HTTP_404_RESPONSE,
 };
 
 const TESTWEBSITE: &[u8] = include_bytes!("../static/mockup_mini.html.gz");
 
-struct ServeWebSite {
+struct HttpGetHandle {
     data: &'static [u8],
 }
 
-impl HttpCallback for ServeWebSite {
+impl HttpCallback for HttpGetHandle {
     fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
-        info!("{}",request);
+        info!("{}", request);
         match request.path.as_str() {
             "/" | "/index.html" => {
                 let mut buf: Vec<u8> = gen_http_header(
-                    self.data,
+                    Some(self.data),
                     HttpContentType::Text,
                     Some(HttpEncodingType::Gzip),
                 );
                 buf.extend_from_slice(TESTWEBSITE);
+                buf
+            }
+            "/lps" => {
+                let lps = &format!("{}", get_lps()).into_bytes();
+                let mut buf = gen_http_header(Some(lps), HttpContentType::Data, None);
+                buf.extend_from_slice(lps);
                 buf
             }
             _ => HTTP_404_RESPONSE.into(),
@@ -44,16 +50,29 @@ impl HttpCallback for ServeWebSite {
     }
 }
 
-const WEBSITESERVER: ServeWebSite = ServeWebSite { data: TESTWEBSITE };
+const HTTPGETHANDLE: HttpGetHandle = HttpGetHandle { data: TESTWEBSITE };
+const HTTPPOSTHANDLE: HttpPostHandle = HttpPostHandle;
 
-struct HandleRgb;
+const RINGBUFSIZE: usize = 128;
+
+struct HttpPostHandle;
+
+impl HttpCallback for HttpPostHandle {
+    fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
+        info!("{}", request);
+        match request.path.as_str() {
+            "/rgb" => gen_http_header(None, HttpContentType::Text, None),
+            _ => HTTP_404_RESPONSE.into(),
+        }
+    }
+}
 
 pub struct TcpServer<'a> {
     device: StmPhy,
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
-    data_rem: usize,
+    rxbytes: Vec<u8>,
     httpserver: Httpserver,
     msgtosend: Vec<u8>,
 }
@@ -85,20 +104,21 @@ impl<'a> TcpServer<'a> {
 
         //build http server
         let mut callbacks: CallbackBt = CallbackBt::new();
-        callbacks.insert("GET", &WEBSITESERVER); //TODO: upstream?
+        callbacks.insert("GET", &HTTPGETHANDLE); //TODO: upstream?
+        callbacks.insert("POST", &HTTPPOSTHANDLE);
 
         TcpServer {
             device,
             iface,
             sockets,
             tcp1_handle,
-            data_rem: 0,
             httpserver: Httpserver::new(callbacks),
-            msgtosend: vec![0u8; 256],
+            rxbytes: Vec::<u8>::new(),
+            msgtosend: Vec::<u8>::new(),
         }
     }
 
-    fn handle_http_requests(&mut self) {
+    fn run_webserver(&mut self) {
         //get the tcp socket
         let sock = self.sockets.get_mut::<tcp::Socket>(self.tcp1_handle);
 
@@ -109,7 +129,6 @@ impl<'a> TcpServer<'a> {
 
         // if socket was closed, reset the write pointer.
         if sock.state() == State::CloseWait {
-            self.data_rem = 0;
             sock.close()
         }
 
@@ -121,16 +140,28 @@ impl<'a> TcpServer<'a> {
         }
 
         if sock.can_recv() && self.msgtosend.is_empty() {
-            let mut slice = [0; 256];
-            let _bytecnt = sock.recv_slice(&mut slice).expect("failed to receive");
+            let mut rxslice = [0u8; RINGBUFSIZE];
+            let len = sock.recv_slice(&mut rxslice).expect("failed to receive");
 
-            match self.httpserver.parse_request(&slice) {
+            self.rxbytes.extend_from_slice(&rxslice[0..len]);
+
+            match self.httpserver.parse_request(&self.rxbytes) {
                 Ok(resp) => {
-                    self.msgtosend=resp;
+                    self.msgtosend = resp;
+                    //the assumption here as if we didn't parse the header we don't have all of it.
+                    self.rxbytes.clear();
                 }
-                Err(_x) => warn!("failed to parse request!"),
+                Err(x) => {
+                    if let HttpError::Unsupported = x {
+                        warn!("failed to parse request!")
+                    }
+                }
             };
         }
+    }
+
+    fn run_dhcpserver(&mut self) {
+        //TODO!
     }
 
     pub fn eth_task(&mut self, currtime: u32) {
@@ -140,7 +171,8 @@ impl<'a> TcpServer<'a> {
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);
 
-        self.handle_http_requests();
+        self.run_webserver();
+        self.run_dhcpserver();
     }
     pub fn get_bufs(&mut self) -> EthRingBuffers {
         (&mut self.device.rxq, &mut self.device.txq)

@@ -6,6 +6,7 @@ use core::cell::RefCell;
 use cortex_m_rt::entry;
 use cortex_m_rt::exception;
 use critical_section::{with, Mutex};
+use defmt::debug;
 use defmt::info;
 use defmt_rtt as _;
 use embedded_alloc::Heap;
@@ -40,6 +41,7 @@ use usb_device::class_prelude::UsbBusAllocator;
 use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
+static LPS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
 
 defmt::timestamp!("{=u32}",{
    get_counter() 
@@ -53,6 +55,17 @@ fn increase_counter() {
 fn get_counter() -> u32 {
     with(|cs| *TICKS.borrow(cs).borrow())
 }
+
+
+fn set_lps(val: u32) {
+    with(|cs| {
+        *LPS.borrow(cs).borrow_mut() = val;
+    }) 
+}
+pub fn get_lps() -> u32{
+    with(|cs| *LPS.borrow(cs).borrow())
+}
+
 
 #[exception]
 fn SysTick() {
@@ -100,7 +113,6 @@ static mut USB_BUS: Option<UsbBusAllocator<UsbBus<Peripheral>>> = None;
 
 struct ProjectPeriphs {
     arm: cortex_m::Peripherals,
-    // sanity_led : LedPin,
     // rgb: RgbControl,
     led: Pin,
     usb: Peripheral,
@@ -218,9 +230,11 @@ fn main() -> ! {
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32, led: &mut Pin) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
-        info!("seconds:{} loops: {}", looptime / 1000, cnt);
+        debug!("seconds:{} loops: {}", looptime / 1000, cnt);
+        set_lps(*cnt);
         *cnt = 0;
         led.toggle();
+
         looptime
     } else {
         lastlooptime

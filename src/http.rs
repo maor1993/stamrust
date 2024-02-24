@@ -1,13 +1,9 @@
 extern crate alloc;
-
-use core::fmt::Error;
-
-use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{FromUtf8Error, String};
 use alloc::vec::Vec;
 
-use defmt::warn;
+use defmt::{info, warn};
 
 pub type CallbackBt = alloc::collections::BTreeMap<&'static str, &'static dyn HttpCallback>;
 
@@ -16,6 +12,7 @@ pub const SUPPORTED_METHODS: [&str; 2] = ["GET", "POST"];
 pub enum HttpError {
     ParseError,
     CallbackNotFound,
+    Unsupported,
 }
 
 pub enum HttpContentType {
@@ -52,24 +49,20 @@ impl From<FromUtf8Error> for HttpError {
     }
 }
 
-
-
-
-
 pub fn gen_http_header(
-    data: &[u8],
+    data: Option<&[u8]>,
     content_type: HttpContentType,
     encoding_type: Option<HttpEncodingType>,
 ) -> Vec<u8> {
-    let lenstr = format!("Content-Length: {}\r\n", data.len());
-    
+    let lenstr = format!("Content-Length: {}\r\n", data.unwrap_or(&[]).len());
+
     let contentstr = content_type.as_str();
     let encodingstr = encoding_type.unwrap_or(HttpEncodingType::None).as_str();
     format!("HTTP/1.1 200 OK\r\n{contentstr}{encodingstr}{lenstr}Connection: close\r\n\r\n").into()
 }
 
 pub trait HttpCallback {
-    fn handle_request(&self, request: &HttpRequest) ->  Vec<u8>;
+    fn handle_request(&self, request: &HttpRequest) -> Vec<u8>;
 }
 
 pub struct Httpserver {
@@ -87,29 +80,29 @@ pub const HTTP_404_RESPONSE: &[u8] = "HTTP/1.1 404 Not Found\r\n\
                                 Content-Type: text/plain\r\n\
                                 Content-Length: 13\r\n\
                                 Connection: close\r\n\r\n\
-                                404 Not Found".as_bytes();
+                                404 Not Found"
+    .as_bytes();
 
 impl Httpserver {
     pub fn new(callbacks: CallbackBt) -> Self {
         Httpserver { callbacks }
     }
 
-    pub fn parse_request(&mut self, request_buf: &[u8]) -> Result< Vec<u8>, HttpError> {
+    pub fn parse_request(&mut self, request_buf: &[u8]) -> Result<Vec<u8>, HttpError> {
         let req = String::from_utf8(request_buf.to_vec())?;
-
         // For simplicity, assume that the request is well-formed
         let parts: Vec<&str> = req.lines().collect();
 
         let method: String = parts[0].split_whitespace().nth(0).unwrap_or("").into();
 
         if !SUPPORTED_METHODS.iter().any(|x| x == &method.as_str()) {
-            return Err(HttpError::ParseError);
+            return Err(HttpError::Unsupported);
         }
 
         let path = parts[0].split_whitespace().nth(1).unwrap().into();
 
-        let body_index = req.find("\r\n\r\n").unwrap_or(req.len());
-        let body = req.get(body_index + 4..).unwrap_or("");
+        let body_index = req.find("\r\n\r\n").ok_or(HttpError::ParseError)?;
+        let body: &str = req.get(body_index + 4..).unwrap_or("");
 
         let request = HttpRequest {
             method,

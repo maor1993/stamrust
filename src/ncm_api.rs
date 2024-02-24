@@ -336,7 +336,7 @@ impl NcmApiManager {
                 IpRxState::AwaitHeader => {
                     if size < core::mem::size_of::<NCMTransferHeader>() {
                         warn!("got unaligned ncm msg");
-                        info!("unaligned msg {:02x}", usbbuf[0..size]);
+                        // info!("unaligned msg {:02x}", usbbuf[0..size]);
                         continue; //dont handle partial ncm headers
                     }
                     // attempt to parse the start of the buffer as a transfer header (by checking the signiture is correct)
