@@ -30,8 +30,8 @@ mod cdc_ncm;
 mod ncm_api;
 use ncm_api::NcmApiManager;
 
-mod server;
 mod http;
+mod server;
 use server::TcpServer;
 
 mod ncm_netif;
@@ -42,10 +42,9 @@ use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
 static LPS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
+static RGB: Mutex<RefCell<(u8, u8, u8)>> = Mutex::new(RefCell::new((0, 0, 0)));
 
-defmt::timestamp!("{=u32}",{
-   get_counter() 
-});
+defmt::timestamp!("{=u32}", { get_counter() });
 
 fn increase_counter() {
     with(|cs| {
@@ -55,17 +54,23 @@ fn increase_counter() {
 fn get_counter() -> u32 {
     with(|cs| *TICKS.borrow(cs).borrow())
 }
-
+pub fn set_rgb(val: (u8, u8, u8)) {
+    with(|cs| {
+        *RGB.borrow(cs).borrow_mut() = val;
+    })
+}
+pub fn get_rgb() -> (u8, u8, u8) {
+    with(|cs| *RGB.borrow(cs).borrow())
+}
 
 fn set_lps(val: u32) {
     with(|cs| {
         *LPS.borrow(cs).borrow_mut() = val;
-    }) 
+    })
 }
-pub fn get_lps() -> u32{
+pub fn get_lps() -> u32 {
     with(|cs| *LPS.borrow(cs).borrow())
 }
-
 
 #[exception]
 fn SysTick() {
@@ -93,9 +98,10 @@ impl RgbControl {
             RgbLed::Green => TimChannel::C2,
             RgbLed::Blue => TimChannel::C3,
         };
-        self.rgb.set_duty(channel, (max_duty / u8::MAX as u16) * duty as u16);
+        self.rgb
+            .set_duty(channel, (max_duty / u8::MAX as u16) * duty as u16);
     }
-    fn tim1_errata(&mut self){
+    fn tim1_errata(&mut self) {
         let tim1 = unsafe { &(*TIM1::ptr()) };
         tim1.bdtr.write(|w| w.moe().set_bit());
         tim1.egr.write(|w| w.ug().set_bit());
@@ -145,11 +151,9 @@ impl ProjectPeriphs {
         let _usb_dm = Pin::new(Port::A, 11, PinMode::Alt(14));
         let _usb_dp = Pin::new(Port::A, 12, PinMode::Alt(14));
 
-
-        let _rgb_r = Pin::new(Port::A,8,PinMode::Alt(1));
-        let _rgb_g = Pin::new(Port::A,9,PinMode::Alt(1));
-        let _rgb_b = Pin::new(Port::A,10,PinMode::Alt(1));
-
+        let _rgb_r = Pin::new(Port::A, 8, PinMode::Alt(1));
+        let _rgb_g = Pin::new(Port::A, 9, PinMode::Alt(1));
+        let _rgb_b = Pin::new(Port::A, 10, PinMode::Alt(1));
 
         arm.SYST.set_reload((clk_cfg.systick() / 8_000) - 1);
         arm.SYST.enable_counter();
@@ -171,13 +175,17 @@ impl ProjectPeriphs {
         let _rng = Rng::new(dp.RNG);
 
         // ProjectPeriphs {arm, usb, rgb }
-        ProjectPeriphs { arm, usb, rgb ,clk_cfg}
+        ProjectPeriphs {
+            arm,
+            usb,
+            rgb,
+            clk_cfg,
+        }
     }
     fn enable_irqs(&mut self) {
         unsafe {
             NVIC::unmask(interrupt::USB_FS);
             self.arm.NVIC.set_priority(interrupt::USB_FS, 1);
-            
         }
     }
 }
@@ -216,7 +224,7 @@ fn main() -> ! {
         let usbipmanager = UsbIpManager::new(USB_BUS.as_ref().unwrap());
         USBCON.borrow(cs).replace(Some(usbipmanager));
     });
-    
+
     loop {
         let looptime = get_counter();
         with(|cs| {
@@ -225,13 +233,17 @@ fn main() -> ! {
             ncmapi.process_messages(tcpserv.get_bufs(), usbcon.get_bufs());
         });
         tcpserv.eth_task(looptime);
-        lastlooptime =
-            finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
+        handle_incoming_rgb_requests(&mut periphs.rgb);
+        lastlooptime = finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
         perfcounter += 1;
-        periphs.rgb.set_duty(RgbLed::Red, (lastlooptime%256) as u8);
-        periphs.rgb.set_duty(RgbLed::Green, (lastlooptime%256) as u8);
-        periphs.rgb.set_duty(RgbLed::Blue, (lastlooptime%256) as u8);
     }
+}
+
+fn handle_incoming_rgb_requests(rgb: &mut RgbControl) {
+    let (r, g, b) = get_rgb();
+    rgb.set_duty(RgbLed::Red, 255 - r);
+    rgb.set_duty(RgbLed::Green, 255 - g);
+    rgb.set_duty(RgbLed::Blue, 255 - b);
 }
 
 fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {

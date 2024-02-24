@@ -12,6 +12,7 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
 use crate::get_lps;
+use crate::set_rgb;
 use crate::ncm_netif::{EthRingBuffers, StmPhy};
 use defmt::info;
 
@@ -61,7 +62,14 @@ impl HttpCallback for HttpPostHandle {
     fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
         info!("{}", request);
         match request.path.as_str() {
-            "/rgb" => gen_http_header(None, HttpContentType::Text, None),
+            "/rgb" => {
+                let r = u8::from_str_radix(&request.body[1..3], 16).unwrap();
+                let g = u8::from_str_radix(&request.body[3..5], 16).unwrap();
+                let b = u8::from_str_radix(&request.body[5..7], 16).unwrap();
+                info!("r:{} g:{} b:{}",r,g,b);
+                set_rgb((r, g, b));
+                gen_http_header(None, HttpContentType::Text, None)
+            },
             _ => HTTP_404_RESPONSE.into(),
         }
     }
