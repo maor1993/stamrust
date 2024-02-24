@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use defmt::{info, warn};
 
-pub type CallbackBt = alloc::collections::BTreeMap<&'static str, &'static dyn HttpCallback>;
+pub type CallbackBt = Vec<&'static dyn HttpCallback>;
 
 pub const SUPPORTED_METHODS: [&str; 2] = ["GET", "POST"];
 
@@ -110,10 +110,12 @@ impl Httpserver {
             body: body.into(),
         };
 
-        let callback = self
-            .callbacks
-            .get(request.method.as_str())
-            .ok_or(HttpError::CallbackNotFound)?;
+        let callback = match request.method.as_str() {
+            "GET" => self.callbacks[0],
+            "POST" => self.callbacks[1],
+            _ => return Err(HttpError::CallbackNotFound),
+        };
+
         let resp = callback.handle_request(&request);
         Ok(resp) //TODO: this assumes callbacks can never fail!
     }

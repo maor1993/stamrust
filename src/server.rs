@@ -111,10 +111,7 @@ impl<'a> TcpServer<'a> {
         let tcp1_handle = sockets.add(tcp1_socket);
 
         //build http server
-        let mut callbacks: CallbackBt = CallbackBt::new();
-        callbacks.insert("GET", &HTTPGETHANDLE); //TODO: upstream?
-        callbacks.insert("POST", &HTTPPOSTHANDLE);
-
+        let callbacks: CallbackBt = vec![&HTTPGETHANDLE,&HTTPPOSTHANDLE];
         TcpServer {
             device,
             iface,
