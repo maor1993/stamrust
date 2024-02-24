@@ -20,7 +20,7 @@ use stm32_hal2::{
     gpio::{Pin, PinMode, Port},
     pac::{self, interrupt},
     rng::{self, Rng},
-    timer::{OutputCompare, TimChannel, Timer, TimerConfig},
+    timer::{OutputCompare, TimChannel, Timer},
     usb::{self, Peripheral, UsbBus},
 };
 
@@ -30,6 +30,7 @@ mod ncm_api;
 use ncm_api::NcmApiManager;
 
 mod server;
+mod http;
 use server::TcpServer;
 
 mod ncm_netif;

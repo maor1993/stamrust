@@ -1,27 +1,61 @@
 extern crate alloc;
 
-
+use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 
-
+use defmt::warn;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::socket::tcp::State;
 use smoltcp::socket::tcp;
+use smoltcp::socket::tcp::State;
 use smoltcp::time::Instant;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
-use crate::ncm_netif::{StmPhy, EthRingBuffers};
+use crate::ncm_netif::{EthRingBuffers, StmPhy};
 use defmt::info;
 
-const TESTWEBSITE: &[u8] = include_bytes!("../static/index.html");
+use crate::http::{
+    gen_http_header, CallbackBt, HttpCallback, HttpContentType, HttpEncodingType, HttpRequest,
+    Httpserver, HTTP_404_RESPONSE,
+};
+
+const TESTWEBSITE: &[u8] = include_bytes!("../static/mockup_mini.html.gz");
+
+struct ServeWebSite {
+    data: &'static [u8],
+}
+
+impl HttpCallback for ServeWebSite {
+    fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
+        info!("{}",request);
+        match request.path.as_str() {
+            "/" | "/index.html" => {
+                let mut buf: Vec<u8> = gen_http_header(
+                    self.data,
+                    HttpContentType::Text,
+                    Some(HttpEncodingType::Gzip),
+                );
+                buf.extend_from_slice(TESTWEBSITE);
+                buf
+            }
+            _ => HTTP_404_RESPONSE.into(),
+        }
+    }
+}
+
+const WEBSITESERVER: ServeWebSite = ServeWebSite { data: TESTWEBSITE };
+
+struct HandleRgb;
 
 pub struct TcpServer<'a> {
     device: StmPhy,
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
-    curr_data_idx: usize,
+    data_rem: usize,
+    httpserver: Httpserver,
+    msgtosend: Vec<u8>,
 }
 
 impl<'a> TcpServer<'a> {
@@ -46,47 +80,58 @@ impl<'a> TcpServer<'a> {
         let tcp1_tx_buffer = tcp::SocketBuffer::new(vec![0; 128]);
         let tcp1_socket = tcp::Socket::new(tcp1_rx_buffer, tcp1_tx_buffer);
 
-        // let dhcp_config = dhcpv4::Config{address:Ipv4Cidr::new(, 24)};
-
-        // dhcp_socket.
-
         let mut sockets = SocketSet::new(vec![]);
         let tcp1_handle = sockets.add(tcp1_socket);
+
+        //build http server
+        let mut callbacks: CallbackBt = CallbackBt::new();
+        callbacks.insert("GET", &WEBSITESERVER); //TODO: upstream?
+
         TcpServer {
             device,
             iface,
             sockets,
             tcp1_handle,
-            curr_data_idx: 0,
+            data_rem: 0,
+            httpserver: Httpserver::new(callbacks),
+            msgtosend: vec![0u8; 256],
         }
     }
-    fn handle_web_requests(sock: &mut tcp::Socket<'_>,mut last_tx_idx:usize ) -> usize{
+
+    fn handle_http_requests(&mut self) {
+        //get the tcp socket
+        let sock = self.sockets.get_mut::<tcp::Socket>(self.tcp1_handle);
+
+        //ensure socket is open.
         if !sock.is_open() {
-            sock.listen(6969).unwrap();
-            
+            sock.listen(80).unwrap();
         }
 
-        if  sock.state() == State::CloseWait {
-            last_tx_idx = 0;
+        // if socket was closed, reset the write pointer.
+        if sock.state() == State::CloseWait {
+            self.data_rem = 0;
             sock.close()
         }
 
-
-        if sock.can_send() && last_tx_idx < TESTWEBSITE.len() {
-            last_tx_idx += sock
-                .send_slice(&TESTWEBSITE[last_tx_idx..])
+        if sock.can_send() && !self.msgtosend.is_empty() {
+            let sent = sock
+                .send_slice(&self.msgtosend[0..])
                 .expect("failed to send message");
+            self.msgtosend = self.msgtosend[sent..].to_vec();
         }
 
-        if sock.can_recv(){
-            let mut slice = [0;256];
-            let bytecnt = sock.recv_slice(&mut slice).expect("failed to receive");
-            info!("recv bytes: {}",slice[0..bytecnt]);
+        if sock.can_recv() && self.msgtosend.is_empty() {
+            let mut slice = [0; 256];
+            let _bytecnt = sock.recv_slice(&mut slice).expect("failed to receive");
+
+            match self.httpserver.parse_request(&slice) {
+                Ok(resp) => {
+                    self.msgtosend=resp;
+                }
+                Err(_x) => warn!("failed to parse request!"),
+            };
         }
-        last_tx_idx
-        
     }
-
 
     pub fn eth_task(&mut self, currtime: u32) {
         let _send_at = Instant::from_millis(currtime);
@@ -95,18 +140,9 @@ impl<'a> TcpServer<'a> {
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);
 
-        let tcp_socket = self.sockets.get_mut::<tcp::Socket>(self.tcp1_handle);
-        
-        self.curr_data_idx = Self::handle_web_requests(tcp_socket,self.curr_data_idx);
-        
-
-        
-    
+        self.handle_http_requests();
     }
     pub fn get_bufs(&mut self) -> EthRingBuffers {
-        (
-            &mut self.device.rxq,
-            &mut self.device.txq,
-        )
+        (&mut self.device.rxq, &mut self.device.txq)
     }
 }

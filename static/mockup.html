@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Stamdev Server</title>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <style>
+        body {
+            font-family: Tahoma, sans-serif;
+            background-color: #1e1e1e;
+            color: #cccccc;
+            align-content: center;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <h1>Welcome to STAMDEV L412 Rust Web server demo!</h1>choose a color and the RGB led on the board will lit
+        accordingly <input type="color" id="colorInput" oninput="handleColorChange()"></input>
+    </div>
+    <div>Loops per second: <input type="number" id="lps" readonly></div>
+    <script>
+        var colorChangeTimer;
+        function handleColorChange() {
+            clearTimeout(colorChangeTimer);
+
+            colorChangeTimer = setTimeout(updateColor, 500);
+        } function updateColor() {
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", "rgb", true);
+            var colorValue = document.getElementById("colorInput").value;
+            var rgb = hexToRgb(colorValue);
+            xhr.send(colorValue);
+        }
+
+        function makeRequest() {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "lps", true);
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState == 4 && xhr.status == 200) {
+                    var responseNumber = parseInt(xhr.responseText);
+                    document.getElementById("lps").value = responseNumber;
+                }
+            };
+            xhr.send();
+        } makeRequest(); setInterval(makeRequest, 5000);  </script>
+</body>
+
+</html>
