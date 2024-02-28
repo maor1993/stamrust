@@ -39,14 +39,14 @@ impl Default for NCMTransferHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, defmt::Format, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct NCMDatagram16 {
     pub index: u16,
     pub length: u16,
 }
 
 #[repr(C)]
-#[derive(Debug, defmt::Format, Clone)]
+#[derive(Clone)]
 pub struct NCMDatagramPointerTable {
     pub signature: u32,
     pub length: u16,

@@ -4,6 +4,7 @@ use alloc::string::{FromUtf8Error, String};
 use alloc::vec::Vec;
 
 use defmt::{info, warn};
+use defmt::Format;
 
 pub type CallbackBt = Vec<&'static dyn HttpCallback>;
 
@@ -69,7 +70,6 @@ pub struct Httpserver {
     callbacks: CallbackBt,
 }
 
-#[derive(Debug, defmt::Format)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,

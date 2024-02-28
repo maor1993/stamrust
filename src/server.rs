@@ -1,5 +1,4 @@
 extern crate alloc;
-
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -7,6 +6,7 @@ use defmt::warn;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::socket::tcp::State;
+use smoltcp::socket::udp;
 use smoltcp::time::Instant;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
@@ -14,11 +14,16 @@ use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 use crate::get_lps;
 use crate::set_rgb;
 use crate::ncm_netif::{EthRingBuffers, StmPhy};
+
 use defmt::info;
 
 use crate::http::{
     gen_http_header, CallbackBt, HttpCallback, HttpContentType, HttpEncodingType, HttpError,
     HttpRequest, Httpserver, HTTP_404_RESPONSE,
+};
+
+use crate::dhcp::{
+    DHCP_SERVER_PORT,DHCP_CLIENT_PORT,DhcpServer
 };
 
 const TESTWEBSITE: &[u8] = include_bytes!("../static/mockup_mini.html.gz");
@@ -29,7 +34,6 @@ struct HttpGetHandle {
 
 impl HttpCallback for HttpGetHandle {
     fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
-        info!("{}", request);
         match request.path.as_str() {
             "/" | "/index.html" => {
                 let mut buf: Vec<u8> = gen_http_header(
@@ -60,7 +64,6 @@ struct HttpPostHandle;
 
 impl HttpCallback for HttpPostHandle {
     fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
-        info!("{}", request);
         match request.path.as_str() {
             "/rgb" => {
                 let r = u8::from_str_radix(&request.body[1..3], 16).unwrap();
@@ -80,8 +83,10 @@ pub struct TcpServer<'a> {
     iface: Interface,
     sockets: SocketSet<'a>,
     tcp1_handle: SocketHandle,
+    udp_handle:SocketHandle,
     rxbytes: Vec<u8>,
     httpserver: Httpserver,
+    dhcpserver: DhcpServer,
     msgtosend: Vec<u8>,
 }
 
@@ -107,17 +112,44 @@ impl<'a> TcpServer<'a> {
         let tcp1_tx_buffer = tcp::SocketBuffer::new(vec![0; 128]);
         let tcp1_socket = tcp::Socket::new(tcp1_rx_buffer, tcp1_tx_buffer);
 
+        let udp_rx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY, udp::PacketMetadata::EMPTY],
+            vec![0; 380],
+        );
+        let udp_tx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY, udp::PacketMetadata::EMPTY],
+            vec![0; 380],
+        );
+        let udp_socket = udp::Socket::new(udp_rx_buffer, udp_tx_buffer);
+
+
         let mut sockets = SocketSet::new(vec![]);
         let tcp1_handle = sockets.add(tcp1_socket);
+        let udp_handle = sockets.add(udp_socket);
 
         //build http server
         let callbacks: CallbackBt = vec![&HTTPGETHANDLE,&HTTPPOSTHANDLE];
+
+
+
+        //build the dhcp server
+        let dhcpserver = DhcpServer{
+            addrstart: 100,
+            maxaddr: 128,
+            addrcnt: 0,
+            serverip: iface.ipv4_addr().unwrap(),
+            subnet: Ipv4Address::new(255, 255, 255, 0),
+            ..DhcpServer::default()
+        };
+
         TcpServer {
             device,
             iface,
             sockets,
             tcp1_handle,
+            udp_handle,
             httpserver: Httpserver::new(callbacks),
+            dhcpserver,
             rxbytes: Vec::<u8>::new(),
             msgtosend: Vec::<u8>::new(),
         }
@@ -166,7 +198,25 @@ impl<'a> TcpServer<'a> {
     }
 
     fn run_dhcpserver(&mut self) {
-        //TODO!
+        let udpsock = self.sockets.get_mut::<udp::Socket>(self.udp_handle);
+
+        if !udpsock.is_open(){
+            udpsock.bind(DHCP_SERVER_PORT).unwrap()
+        }
+
+
+        if let Ok((buf,mut metadata)) = udpsock.recv(){
+            // info!("got msg:{:02x} len: {}",buf,buf.len());
+            if let Some(msg) = self.dhcpserver.recv(buf){
+                metadata.endpoint.port = DHCP_CLIENT_PORT;
+                metadata.endpoint.addr = Ipv4Address::new(255, 255, 255, 255).into();
+                udpsock.send_slice(msg.as_slice(), metadata).unwrap();
+            }
+        }
+
+
+
+
     }
 
     pub fn eth_task(&mut self, currtime: u32) {

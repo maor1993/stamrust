@@ -31,6 +31,7 @@ mod ncm_api;
 use ncm_api::NcmApiManager;
 
 mod http;
+mod dhcp;
 mod server;
 use server::TcpServer;
 
