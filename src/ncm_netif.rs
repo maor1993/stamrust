@@ -6,7 +6,7 @@ use smoltcp::wire::IPV4_MIN_MTU;
 extern crate alloc;
 use concurrent_queue::ConcurrentQueue;
 pub const MTU: usize = IPV4_MIN_MTU;
-const MAX_QUEUE_SIZE: usize = 2;
+const MAX_QUEUE_SIZE: usize = 1;
 
 pub type Ethmsg = (usize,[u8;MTU]);
 pub type  EthRingBuffers<'a> = (&'a mut ConcurrentQueue<Ethmsg>,&'a mut ConcurrentQueue<Ethmsg>);

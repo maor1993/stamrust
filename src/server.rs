@@ -134,7 +134,7 @@ impl<'a> TcpServer<'a> {
 
         //build the dhcp server
         let dhcpserver = DhcpServer{
-            addrstart: 100,
+            addrstart: 5,
             maxaddr: 128,
             addrcnt: 0,
             serverip: iface.ipv4_addr().unwrap(),
