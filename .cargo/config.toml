@@ -6,4 +6,4 @@
 runner = "gdb-multiarch -q -x openocd.gdb"
 
 [build]
-target = "thumbv7em-none-eabi"       # Cortex-M4F
+target = "thumbv7em-none-eabihf"       # Cortex-M4F
