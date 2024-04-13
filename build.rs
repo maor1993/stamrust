@@ -32,6 +32,7 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
 
     // Specify linker arguments.
+    println!("cargo:rustc-link-arg=--sort-section=alignment");
 
     // `--nmagic` is required if memory section addresses are not aligned to 0x10000,
     // for example the FLASH and RAM sections in your `memory.x`.
