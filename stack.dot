@@ -1,0 +1,33 @@
+digraph{
+    node [shape=box,style=filled,fontname="Calibri"]
+    rankdir="LR"
+
+    
+    stm32_hal [label="stm32-hal2"]
+    smoltcp
+    usbd [label="stm32-usbd"]
+    usb_device [label="usb-device"]
+    cdc_ncm [label="cdc-ncm",fillcolor=aquamarine]
+    ncm_api[label="ncm-api",fillcolor=aquamarine]
+    ncm_netif[label="ncm-netif",fillcolor=aquamarine]
+    board_cfg[label="board-cfg",fillcolor=aquamarine]
+    server[fillcolor=aquamarine]
+    http[fillcolor=aquamarine]
+    dhcp[fillcolor=aquamarine]
+    
+    cortex_m_rt -> cortex_m
+    stm32_hal -> cortex_m
+    board_cfg -> cortex_m
+    board_cfg -> stm32_hal 
+    board_cfg -> cdc_ncm
+    http -> server
+    dhcp -> server 
+    server -> smoltcp    
+    smoltcp -> ncm_netif
+    ncm_netif -> ncm_api [color=blue]
+    ncm_api -> cdc_ncm [color=blue]
+    cdc_ncm -> usb_device 
+    usb_device-> usbd
+    usbd -> stm32_hal
+    
+}

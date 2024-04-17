@@ -11,15 +11,15 @@ use defmt::info;
 use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _;
-use stm32_hal2::access_global;
-use stm32_hal2::make_globals;
+use stm32_hal2::adc::{self, Adc};
+use stm32_hal2::delay_us;
+use stm32_hal2::pac::ADC1;
 use stm32_hal2::pac::TIM1;
 // hal
-use cortex_m::peripheral::NVIC;
 use stm32_hal2::{
     clocks::{self, Clk48Src, Clocks, CrsSyncSrc},
     gpio::{Pin, PinMode, Port},
-    pac::{self, interrupt},
+    pac,
     rng::{self, Rng},
     timer::{OutputCompare, TimChannel, Timer},
     usb::{self, Peripheral, UsbBus},
@@ -30,15 +30,14 @@ mod cdc_ncm;
 mod ncm_api;
 use ncm_api::NcmApiManager;
 
-mod http;
 mod dhcp;
+mod http;
 mod server;
 use server::TcpServer;
 
 mod ncm_netif;
 
 mod usbipserver;
-use usb_device::class_prelude::UsbBusAllocator;
 use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
@@ -103,9 +102,8 @@ impl RgbControl {
             .set_duty(channel, (max_duty / u8::MAX as u16) * duty as u16);
     }
     fn tim1_errata(&mut self) {
-        let tim1 = unsafe { &(*TIM1::ptr()) };
-        tim1.bdtr.write(|w| w.moe().set_bit());
-        tim1.egr.write(|w| w.ug().set_bit());
+        self.rgb.regs.bdtr.write(|w| w.moe().set_bit());
+        self.rgb.regs.egr.write(|w| w.ug().set_bit());
     }
 
     fn active_all_pwms(&mut self) {
@@ -120,14 +118,44 @@ impl RgbControl {
     }
 }
 
-make_globals!((USBCON, UsbIpManager<'_, UsbBus<Peripheral>>));
+struct AdcControl {
+    adc: Adc<ADC1>,
+    temp_k: f32,
+    ts1: u16,
+}
+impl AdcControl {
+    fn new(adc: Adc<ADC1>) -> Self {
+        //read the temp cal
+        //this is unsafe as we're reading it directly from the memory map
+        //memory locations taken from DS
+        let ts1;
+        let ts2;
+        unsafe {
+            ts1 = *(0x1FFF_75A8 as *const u16);
+            ts2 = *(0x1FFF_75CA as *const u16);
+        }
+        //info taken from stm32l412 datasheet
+        let temp_k = 80.0 / (ts2 - ts1) as f32;
+        info!("cal slope {:?}", temp_k);
+        Self::enable_temp_sensor();
 
-static mut USB_BUS: Option<UsbBusAllocator<UsbBus<Peripheral>>> = None;
+        AdcControl { adc, temp_k, ts1 }
+    }
+    fn get_temperature(&mut self) -> f32 {
+        let adcread = (self.adc.read(17) as i32) * 3285 / 3000;
+        self.temp_k * (adcread.wrapping_sub(self.ts1 as i32) as f32) + 30.0
+    }
+
+    fn enable_temp_sensor() {
+        let dp = unsafe { pac::Peripherals::steal() };
+        dp.ADC_COMMON.ccr.modify(|_, w| w.ch17sel().set_bit());
+    }
+}
 
 struct ProjectPeriphs {
     arm: cortex_m::Peripherals,
     rgb: RgbControl,
-    // led: Pin,
+    adc: AdcControl,
     usb: Peripheral,
     clk_cfg: Clocks,
 }
@@ -135,7 +163,7 @@ impl ProjectPeriphs {
     fn new() -> Self {
         let dp = pac::Peripherals::take().unwrap();
         let mut arm = cortex_m::Peripherals::take().unwrap();
-
+        //setup adc first as this function modifies clocks
         let clk_cfg = Clocks {
             // Enable the HSI48 oscillator, so we don't need an external oscillator, and
             // aren't restricted in our PLL config.
@@ -143,6 +171,7 @@ impl ProjectPeriphs {
             clk48_src: Clk48Src::Hsi48,
             ..Default::default()
         };
+
         clk_cfg.setup().unwrap();
         clocks::enable_crs(CrsSyncSrc::Usb);
 
@@ -156,10 +185,6 @@ impl ProjectPeriphs {
         let _rgb_g = Pin::new(Port::A, 9, PinMode::Alt(1));
         let _rgb_b = Pin::new(Port::A, 10, PinMode::Alt(1));
 
-        arm.SYST.set_reload((clk_cfg.systick() / 8_000) - 1);
-        arm.SYST.enable_counter();
-        arm.SYST.enable_interrupt();
-
         let pwm_timer = Timer::new_tim1(
             dp.TIM1,
             10000.,
@@ -171,22 +196,29 @@ impl ProjectPeriphs {
             &clk_cfg,
         );
 
+        let mut adc = Adc::new_adc1(
+            dp.ADC1,
+            adc::AdcDevice::One,
+            Default::default(),
+            clk_cfg.systick(),
+        );
+        adc.set_sample_time(17, adc::SampleTime::T61);
+        let adc = AdcControl::new(adc);
         let rgb = RgbControl::new(pwm_timer);
         let usb = Peripheral { regs: dp.USB };
         let _rng = Rng::new(dp.RNG);
 
-        // ProjectPeriphs {arm, usb, rgb }
+        arm.SYST.clear_current();
+        arm.SYST.set_reload((clk_cfg.systick() / 1_000) - 1);
+        arm.SYST.enable_counter();
+        arm.SYST.enable_interrupt();
+
         ProjectPeriphs {
             arm,
             usb,
+            adc,
             rgb,
             clk_cfg,
-        }
-    }
-    fn enable_irqs(&mut self) {
-        unsafe {
-            NVIC::unmask(interrupt::USB_FS);
-            self.arm.NVIC.set_priority(interrupt::USB_FS, 1);
         }
     }
 }
@@ -208,9 +240,6 @@ fn main() -> ! {
 
     let mut periphs = ProjectPeriphs::new();
     let usb_bus = UsbBus::new(periphs.usb);
-    unsafe {
-        USB_BUS = Some(usb_bus);
-    }
     let mut ncmapi = NcmApiManager::new();
 
     info!("starting server...");
@@ -219,23 +248,18 @@ fn main() -> ! {
 
     let mut perfcounter = 0;
     let mut lastlooptime = 0;
-
-    //move the global variables to the critical seciton
-    with(|cs| unsafe {
-        let usbipmanager = UsbIpManager::new(USB_BUS.as_ref().unwrap());
-        USBCON.borrow(cs).replace(Some(usbipmanager));
-    });
+    let mut usbipmanager = UsbIpManager::new(&usb_bus);
 
     loop {
         let looptime = get_counter();
-        with(|cs| {
-            access_global!(USBCON, usbcon, cs);
-            usbcon.run_loop();
-            ncmapi.process_messages(tcpserv.get_bufs(), usbcon.get_bufs());
-        });
+
+        usbipmanager.run_loop();
+        ncmapi.process_messages(tcpserv.get_bufs(), usbipmanager.get_bufs());
+
         tcpserv.eth_task(looptime);
         handle_incoming_rgb_requests(&mut periphs.rgb);
-        lastlooptime = finalize_perfcounter(&mut perfcounter, looptime, lastlooptime);
+        lastlooptime =
+            finalize_perfcounter(&mut perfcounter, looptime, lastlooptime, &mut periphs.adc);
         perfcounter += 1;
     }
 }
@@ -247,27 +271,23 @@ fn handle_incoming_rgb_requests(rgb: &mut RgbControl) {
     rgb.set_duty(RgbLed::Blue, 255 - b);
 }
 
-fn finalize_perfcounter(cnt: &mut u32, looptime: u32, lastlooptime: u32) -> u32 {
+fn finalize_perfcounter(
+    cnt: &mut u32,
+    looptime: u32,
+    lastlooptime: u32,
+    adc: &mut AdcControl,
+) -> u32 {
     if looptime.saturating_sub(lastlooptime) >= 1000 {
         debug!("seconds:{} loops: {}", looptime / 1000, cnt);
         set_lps(*cnt);
         *cnt = 0;
-        // led.toggle();
+        info!("temperature is {}", adc.get_temperature());
 
         looptime
     } else {
         lastlooptime
     }
 }
-
-// #[interrupt]
-// /// Interrupt handler for USB (serial)
-// fn USB_FS() {
-//     with(|cs| {
-//         access_global!(USBCON, usbipmanager, cs);
-//         usbipmanager.run_loop();
-//     })
-// }
 
 #[defmt::panic_handler]
 fn panic() -> ! {
