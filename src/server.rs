@@ -11,7 +11,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
-use crate::get_lps;
+use crate::get_stats;
 use crate::set_rgb;
 use crate::ncm_netif::{EthRingBuffers, StmPhy};
 
@@ -44,10 +44,11 @@ impl HttpCallback for HttpGetHandle {
                 buf.extend_from_slice(TESTWEBSITE);
                 buf
             }
-            "/lps" => {
-                let lps = &format!("{}", get_lps()).into_bytes();
-                let mut buf = gen_http_header(Some(lps), HttpContentType::Data, None);
-                buf.extend_from_slice(lps);
+            "/stats" => {
+                let stats = get_stats();
+                let data = &format!("{},{}", stats.0,stats.1).into_bytes();
+                let mut buf = gen_http_header(Some(data), HttpContentType::Data, None);
+                buf.extend_from_slice(data);
                 buf
             }
             _ => HTTP_404_RESPONSE.into(),

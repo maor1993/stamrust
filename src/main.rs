@@ -12,7 +12,6 @@ use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _;
 use stm32_hal2::adc::{self, Adc};
-use stm32_hal2::delay_us;
 use stm32_hal2::pac::ADC1;
 use stm32_hal2::pac::TIM1;
 // hal
@@ -41,11 +40,10 @@ mod usbipserver;
 use usbipserver::UsbIpManager;
 
 static TICKS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
-static LPS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0u32));
+static STATS: Mutex<RefCell<(u32,u32)>> = Mutex::new(RefCell::new((0u32,0u32)));
 static RGB: Mutex<RefCell<(u8, u8, u8)>> = Mutex::new(RefCell::new((0, 0, 0)));
 
 defmt::timestamp!("{=u32}", { get_counter() });
-
 fn increase_counter() {
     with(|cs| {
         *TICKS.borrow(cs).borrow_mut() += 1;
@@ -65,11 +63,17 @@ pub fn get_rgb() -> (u8, u8, u8) {
 
 fn set_lps(val: u32) {
     with(|cs| {
-        *LPS.borrow(cs).borrow_mut() = val;
+        STATS.borrow(cs).borrow_mut().0 = val;
     })
 }
-pub fn get_lps() -> u32 {
-    with(|cs| *LPS.borrow(cs).borrow())
+fn set_temp(val: u32) {
+    with(|cs| {
+        STATS.borrow(cs).borrow_mut().1 = val;
+    })
+}
+
+pub fn get_stats() -> (u32,u32) {
+    with(|cs| *STATS.borrow(cs).borrow())
 }
 
 #[exception]
@@ -136,7 +140,6 @@ impl AdcControl {
         }
         //info taken from stm32l412 datasheet
         let temp_k = 80.0 / (ts2 - ts1) as f32;
-        info!("cal slope {:?}", temp_k);
         Self::enable_temp_sensor();
 
         AdcControl { adc, temp_k, ts1 }
@@ -144,6 +147,9 @@ impl AdcControl {
     fn get_temperature(&mut self) -> f32 {
         let adcread = (self.adc.read(17) as i32) * 3285 / 3000;
         self.temp_k * (adcread.wrapping_sub(self.ts1 as i32) as f32) + 30.0
+    }
+    fn get_temperature_int(&mut self) -> u32{
+        (self.get_temperature()*100.0) as u32
     }
 
     fn enable_temp_sensor() {
@@ -203,10 +209,12 @@ impl ProjectPeriphs {
             clk_cfg.systick(),
         );
         adc.set_sample_time(17, adc::SampleTime::T61);
+        
         let adc = AdcControl::new(adc);
         let rgb = RgbControl::new(pwm_timer);
         let usb = Peripheral { regs: dp.USB };
         let _rng = Rng::new(dp.RNG);
+        
 
         arm.SYST.clear_current();
         arm.SYST.set_reload((clk_cfg.systick() / 1_000) - 1);
@@ -228,7 +236,7 @@ static HEAP: Heap = Heap::empty();
 
 fn init_heap() {
     use core::mem::MaybeUninit;
-    const HEAP_SIZE: usize = 8192;
+    const HEAP_SIZE: usize = 0x4000;
     #[link_section = ".ram2bss"]
     static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
     unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
@@ -280,8 +288,8 @@ fn finalize_perfcounter(
     if looptime.saturating_sub(lastlooptime) >= 1000 {
         debug!("seconds:{} loops: {}", looptime / 1000, cnt);
         set_lps(*cnt);
+        set_temp(adc.get_temperature_int());
         *cnt = 0;
-        info!("temperature is {}", adc.get_temperature());
 
         looptime
     } else {
