@@ -26,22 +26,29 @@ use crate::dhcp::{
     DHCP_SERVER_PORT,DHCP_CLIENT_PORT,DhcpServer
 };
 
-const TESTWEBSITE: &[u8] = include_bytes!("../static/mockup_mini.html.gz");
-
-struct HttpGetHandle {
-    data: &'static [u8],
-}
+struct HttpGetHandle;
 
 impl HttpCallback for HttpGetHandle {
     fn handle_request(&self, request: &HttpRequest) -> Vec<u8> {
         match request.path.as_str() {
             "/" | "/index.html" => {
+                let data  = include_bytes!("../static/mockup_mini.html.gz");
                 let mut buf: Vec<u8> = gen_http_header(
-                    Some(self.data),
+                    Some(data),
                     HttpContentType::Text,
                     Some(HttpEncodingType::Gzip),
                 );
-                buf.extend_from_slice(TESTWEBSITE);
+                buf.extend_from_slice(data);
+                buf
+            }
+            "/js_chart_mini.js" => {
+                let data = include_bytes!("../static/js_chart_mini.js.gz");
+                let mut buf: Vec<u8> = gen_http_header(
+                    Some(data),
+                    HttpContentType::Script,
+                    Some(HttpEncodingType::Gzip),
+                );
+                buf.extend_from_slice(data);
                 buf
             }
             "/stats" => {
@@ -56,7 +63,7 @@ impl HttpCallback for HttpGetHandle {
     }
 }
 
-const HTTPGETHANDLE: HttpGetHandle = HttpGetHandle { data: TESTWEBSITE };
+const HTTPGETHANDLE: HttpGetHandle = HttpGetHandle;
 const HTTPPOSTHANDLE: HttpPostHandle = HttpPostHandle;
 
 const RINGBUFSIZE: usize = 128;

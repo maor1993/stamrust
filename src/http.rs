@@ -3,9 +3,6 @@ use alloc::format;
 use alloc::string::{FromUtf8Error, String};
 use alloc::vec::Vec;
 
-use defmt::{info, warn};
-use defmt::Format;
-
 pub type CallbackBt = Vec<&'static dyn HttpCallback>;
 
 pub const SUPPORTED_METHODS: [&str; 2] = ["GET", "POST"];
@@ -18,6 +15,7 @@ pub enum HttpError {
 
 pub enum HttpContentType {
     Text,
+    Script,
     Data,
 }
 
@@ -26,6 +24,7 @@ impl HttpContentType {
         match self {
             HttpContentType::Data => "Content-Type: application/data\r\n",
             HttpContentType::Text => "Content-Type: text/html\r\n",
+            HttpContentType::Script => "Content-Type: text/javascript\r\n"
         }
     }
 }
