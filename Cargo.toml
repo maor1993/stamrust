@@ -25,16 +25,8 @@ usbd-serial = "0.1.1"
 concurrent-queue = {version="2.4.0", default-features = false}
 # tcpip
 smoltcp = { version = "0.11.0", default-features = false, features = ["medium-ethernet","socket-icmp","socket-udp","socket-tcp","proto-ipv4","proto-ipv4-fragmentation","alloc","defmt"] }
-
-
-
-[dependencies.usb-device]
-path = "../usb-device"
-features = ["min-lang-id"]
-
-[dependencies.stm32-hal2 ]
-path = "../stm32-hal"
-features = ["l4x2", "l4rt","usb"]
+stm32-hal2 = { version = "1.8.5", features = ["l4x2", "l4rt", "usb"] }
+usb-device = "0.3.2"
 
                          
 
